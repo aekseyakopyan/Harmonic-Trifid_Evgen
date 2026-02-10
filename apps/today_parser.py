@@ -39,7 +39,7 @@ class TelegramVacancyParser:
         
         self.client = None
         self.seen_messages = set() # Для дедупликации по тексту
-        self.db = VacancyDatabase("data/db/vacancies.db")  # База данных вакансий
+        self.db = VacancyDatabase()  # База данных вакансий (берет путь из settings)
         self.results = {
             'parsed_at': datetime.now(timezone.utc).isoformat(),
             'total_messages_scanned': 0,
@@ -288,10 +288,11 @@ class TelegramVacancyParser:
 
     def save_results(self, filename: str):
         """Сохраняет результаты в JSON файл"""
-        with open(filename, 'w', encoding='utf-8') as f:
+        filepath = settings.DATA_DIR / filename
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.results, f, ensure_ascii=False, indent=2)
         
-        print(f"\n💾 Результаты сохранены: {filename}")
+        print(f"\n💾 Результаты сохранены: {filepath}")
         print(f"   📊 Всего просканировано источников: {self.results.get('total_chats_scanned', 0)}")
         print(f"   📊 Всего просканировано сообщений: {self.results['total_messages_scanned']}")
         print(f"   ✅ Релевантных вакансий: {len(self.results['relevant_vacancies'])}")
@@ -300,8 +301,8 @@ class TelegramVacancyParser:
         """Генерирует подробный markdown-отчет с учётом статистики из БД."""
         # Получаем статистику из базы данных
         db_stats = self.db.get_stats()
-        
-        with open(filename, 'w', encoding='utf-8') as f:
+        filepath = settings.REPORTS_DIR / filename
+        with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"# 📊 Отчет по вакансиям (подробный)\n\n")
             f.write(f"**Дата:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
             f.write(f"**Источников просканировано:** {self.results.get('total_chats_scanned', 0)}\n")
@@ -379,7 +380,8 @@ class TelegramVacancyParser:
 
     def generate_full_unfiltered_report(self, filename: str):
         """Генерирует максимально полный отчет без каких-либо фильтров"""
-        with open(filename, 'w', encoding='utf-8') as f:
+        filepath = settings.REPORTS_DIR / filename
+        with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"# 📜 ПОЛНЫЙ ДАМП СООБЩЕНИЙ (БЕЗ ФИЛЬТРОВ)\n\n")
             f.write(f"**Дата:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
             f.write(f"**Всего сообщений в дампе:** {len(self.results['all_messages'])}\n\n")
@@ -398,53 +400,30 @@ class TelegramVacancyParser:
 
 
 async def main():
-    """Главная функция"""
-    parser = TelegramVacancyParser()
-    
-    # Парсим все чаты за сегодня (24 часа)
-    await parser.parse_dialogs(hours_ago=24)
-    
-    # Сохраняем результаты
-    today = datetime.now().strftime("%Y-%m-%d")
-    parser.save_results(f"vacancies_{today}_all.json")
-    parser.generate_markdown_report("report_today.md")
-    parser.generate_full_unfiltered_report("full_dump_today.md")
-
-
-async def main():
-    """Главная функция"""
-    # Инициализация (проверка сессии)
+    """Главная функция мониторинга"""
     parser = TelegramVacancyParser()
     await parser.initialize()
 
-    TARGET_CYCLE_MINUTES = 30
-    MIN_SLEEP_SECONDS = 60
-
-    print(f"🚀 Запущен непрерывный мониторинг (Целевой цикл: {TARGET_CYCLE_MINUTES} мин)...")
+    print(f"🚀 Запущен непрерывный мониторинг...")
     
     while True:
         try:
             start_time = datetime.now()
             print(f"\n⏰ Новый цикл сканирования: {start_time.strftime('%H:%M:%S')}")
             
-            # Создаем новый инстанс для чистоты
             cycle_parser = TelegramVacancyParser()
-            # Используем StringSession из инициализированного выше parser'а или читаем заново внутри __init__
-            # Так как мы изменили __init__ на чтение файла, все ок.
-            
             await cycle_parser.parse_dialogs(hours_ago=24)
             
-            # Сохраняем результаты
             today = datetime.now().strftime("%Y-%m-%d")
             cycle_parser.save_results(f"vacancies_{today}_monitor.json")
             cycle_parser.generate_markdown_report("report_today.md")
+            cycle_parser.generate_full_unfiltered_report("full_dump_today.md")
             
-            # Расчет времени сна
             end_time = datetime.now()
             duration = end_time - start_time
             
-            print(f"🏁 Цикл завершен за {duration}. Перезапуск через 5 секунд...")
-            await asyncio.sleep(5)
+            print(f"🏁 Цикл завершен за {duration}. Перезапуск через 10 секунд...")
+            await asyncio.sleep(10)
             
         except Exception as e:
             print(f"❌ Критическая ошибка в цикле: {e}")
