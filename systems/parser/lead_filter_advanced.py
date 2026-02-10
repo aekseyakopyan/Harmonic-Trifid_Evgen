@@ -12,7 +12,9 @@ from systems.parser.entity_extractor import EntityExtractor, extract_entities_hy
 from systems.parser.lead_scoring import calculate_lead_priority
 from systems.parser.ml_classifier import ml_classifier
 from systems.parser.bert_classifier import bert_classifier
+from systems.parser.bert_classifier import bert_classifier
 from systems.parser.workflow import LeadWorkflow
+from systems.parser.vacancy_db import VacancyDatabase
 from core.utils.structured_logger import logger
 
 # ==========================================
@@ -500,6 +502,7 @@ async def filter_lead_advanced(
     text: str,
     source: str,
     direction: str,
+    message_id: int = 0,
     use_llm_for_uncertain: bool = True,
     use_deduplication: bool = True
 ) -> Dict[str, Any]:
@@ -509,17 +512,28 @@ async def filter_lead_advanced(
     details = {}
     
     # 1. Шаг: Дедупликация
+    # 1. Шаг: Дедупликация
     if use_deduplication:
-        detector = DuplicateDetector()
-        duplicates = detector.find_similar_recent(text, time_window_hours=48, similarity_threshold=0.85)
-        if duplicates:
-            original = duplicates[0]
+        # Initialize detector with DB manager (singleton handles reuse)
+        db = VacancyDatabase()
+        detector = DuplicateDetector(db_manager=db)
+        
+        is_dup, similarity, method = await detector.is_duplicate(
+            text=text, 
+            message_id=message_id, 
+            source_channel=source
+        )
+        
+        if is_dup:
             return {
                 "is_lead": False,
                 "confidence": 0.95,
-                "reason": f"DUPLICATE: {original['similarity']:.2%} similar to {original['hash'][:8]}",
+                "reason": f"DUPLICATE: {similarity:.2%} similar (method: {method})",
                 "stage": "DEDUPLICATION",
-                "details": {"original": original}
+                "details": {
+                    "similarity": similarity,
+                    "method": method
+                }
             }
     
     # Уровень 0: Нормализация
@@ -691,6 +705,7 @@ class LeadFilterAdvanced:
             text=text,
             source=source,
             direction=direction,
+            message_id=message_id or 0,
             use_llm_for_uncertain=True,
             use_deduplication=True
         )
