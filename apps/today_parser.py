@@ -288,7 +288,7 @@ class TelegramVacancyParser:
 
     def save_results(self, filename: str):
         """Сохраняет результаты в JSON файл"""
-        filepath = settings.DATA_DIR / filename
+        filepath = settings.PARSER_REPORTS_DIR / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(self.results, f, ensure_ascii=False, indent=2)
         
