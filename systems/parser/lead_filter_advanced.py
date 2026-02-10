@@ -674,3 +674,32 @@ async def filter_lead_advanced(
     logger.info("lead_classification_complete", **log_data)
         
     return result
+
+
+class LeadFilterAdvanced:
+    """Wrapper class for lead filtering pipeline."""
+    
+    def __init__(self):
+        self.detector = DuplicateDetector()
+        self.extractor = EntityExtractor()
+        
+    async def analyze(self, text: str, message_id: int = None, chat_id: int = None, source: str = "unknown") -> Dict[str, Any]:
+        """Async analysis of a lead."""
+        # Note: We assume direction is core for now or detected elsewhere
+        direction = "SEO" # Default
+        
+        result = await filter_lead_advanced(
+            text=text,
+            source=source,
+            direction=direction,
+            use_llm_for_uncertain=True,
+            use_deduplication=True
+        )
+        
+        # Guard for missing keys from filter_lead_advanced
+        if "tier" not in result:
+            result["tier"] = "COLD" if not result.get("is_lead") else "WARM"
+        if "priority" not in result:
+            result["priority"] = 0
+            
+        return result
