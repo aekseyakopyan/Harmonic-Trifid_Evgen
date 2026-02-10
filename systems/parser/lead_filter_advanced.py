@@ -11,7 +11,9 @@ from systems.parser.duplicate_detector import DuplicateDetector
 from systems.parser.entity_extractor import EntityExtractor
 from systems.parser.lead_scoring import calculate_lead_priority
 from systems.parser.ml_classifier import ml_classifier
+from systems.parser.bert_classifier import bert_classifier
 from systems.parser.workflow import LeadWorkflow
+from core.utils.structured_logger import logger
 
 # ==========================================
 # КОНФИГУРАЦИЯ
@@ -603,25 +605,24 @@ async def filter_lead_advanced(
         stage = "LEVEL_2_HEURISTIC"
         decision_made = True
     
-    # Если решение не принято или уверенность низкая, используем ML
+    # Если решение не принято или уверенность низкая, используем BERT
     if not decision_made or confidence < 0.8:
-        if ml_classifier.is_trained:
-            ml_result = ml_classifier.predict(text)
-            details["ml"] = ml_result
-            
-            # Комбинируем результаты
-            if not decision_made:
-                is_lead = ml_result["is_lead"]
-                confidence = ml_result["confidence"]
-                reason = f"ML_ONLY: {ml_result['method']}"
-                stage = "LEVEL_ML"
-            else:
-                # Гибрид
-                confidence = (confidence + ml_result["confidence"]) / 2
-                is_lead = ml_result["is_lead"] if confidence > 0.5 else is_lead
-                reason = f"HYBRID: heuristic={final_score}, ml={ml_result['confidence']:.2f}"
-                stage = "LEVEL_ML_HYBRID"
-            decision_made = True
+        bert_result = bert_classifier.predict(text)
+        details["bert"] = bert_result
+        
+        # Комбинируем результаты
+        if not decision_made:
+            is_lead = bert_result["is_lead"]
+            confidence = bert_result["confidence"]
+            reason = f"BERT_ONLY: {bert_result['method']}"
+            stage = "LEVEL_BERT"
+        else:
+            # Гибрид (усредняем уверенность эвристики и BERT)
+            confidence = (confidence + bert_result["confidence"]) / 2
+            is_lead = bert_result["is_lead"] if confidence > 0.5 else is_lead
+            reason = f"HYBRID: heuristic={final_score}, bert={bert_result['confidence']:.2f}"
+            stage = "LEVEL_BERT_HYBRID"
+        decision_made = True
 
     # Если всё еще не уверены, используем LLM
     if (not decision_made or (0.4 < confidence < 0.6)) and use_llm_for_uncertain:
@@ -675,12 +676,29 @@ async def filter_lead_advanced(
             "details": details
         }
     else:
-        result = {
-            "is_lead": False,
-            "confidence": confidence,
-            "reason": reason,
-            "stage": stage,
-            "details": details
-        }
+    # Structured Logging
+    log_data = {
+        "event": "lead_classified",
+        "is_lead": is_lead,
+        "confidence": confidence,
+        "reason": reason,
+        "stage": stage,
+        "source": source,
+        "niche": direction,
+        "decision_trail": [
+            f"hard_blocks_pass" if not is_blocked else f"hard_blocked: {block_reason}",
+            f"heuristic_score: {final_score}",
+            f"bert_confidence: {details.get('bert', {}).get('confidence', 0):.2f}" if "bert" in details else "bert_skipped",
+            f"stage: {stage}"
+        ]
+    }
+    
+    if is_lead:
+        log_data.update({
+            "tier": result.get("tier"),
+            "priority": result.get("priority")
+        })
+    
+    logger.info("lead_classification_complete", **log_data)
         
     return result
