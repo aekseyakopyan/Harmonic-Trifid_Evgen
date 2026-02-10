@@ -7,19 +7,20 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
+from core.config.settings import settings
 
 
 class VacancyDatabase:
     """Управление базой данных вакансий с поддержкой дедупликации."""
     
-    def __init__(self, db_path: str = "vacancies.db"):
+    def __init__(self, db_path: str = None):
         """
         Инициализация базы данных.
         
         Args:
             db_path: путь к файлу базы данных SQLite
         """
-        self.db_path = db_path
+        self.db_path = db_path or str(settings.VACANCY_DB_PATH)
         self._init_database()
     
     def _init_database(self):
