@@ -12,7 +12,6 @@ from systems.parser.entity_extractor import EntityExtractor, extract_entities_hy
 from systems.parser.lead_scoring import calculate_lead_priority
 from systems.parser.ml_classifier import ml_classifier
 from systems.parser.bert_classifier import bert_classifier
-from systems.parser.bert_classifier import bert_classifier
 from systems.parser.workflow import LeadWorkflow
 from systems.parser.vacancy_db import VacancyDatabase
 from core.utils.structured_logger import logger
@@ -511,7 +510,6 @@ async def filter_lead_advanced(
     """
     details = {}
     
-    # 1. Шаг: Дедупликация
     # 1. Шаг: Дедупликация
     if use_deduplication:
         # Initialize detector with DB manager (singleton handles reuse)
