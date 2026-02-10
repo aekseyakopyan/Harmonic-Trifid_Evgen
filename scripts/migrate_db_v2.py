@@ -1,5 +1,10 @@
 import sqlite3
 import os
+import sys
+
+# Добавляем корень проекта в пути импорта
+sys.path.append(os.getcwd())
+
 from core.config.settings import settings
 
 def migrate():
