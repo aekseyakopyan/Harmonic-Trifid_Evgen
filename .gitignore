@@ -62,9 +62,18 @@ parsed_messages/
 temp_notify*
 admin_notifier*
 
-# Data
+# Data & Backups
 data/
-audio/
-analytics/
+backups/
+reports/
 *.json
 *.xlsx
+*.db
+*.db-shm
+*.db-wal
+
+# Documentation
+*.md
+!README.md
+!TWA_GUIDE.md
+!docs/*.md
