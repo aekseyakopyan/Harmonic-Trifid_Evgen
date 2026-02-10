@@ -1,6 +1,5 @@
 """
 Gwen bot commands для ревью и разметки лидов из Active Learning.
-Использует aiogram 3.x.
 """
 
 from aiogram import Router, F
@@ -23,6 +22,7 @@ review_sessions = {}
 async def cmd_review_batch(message: Message):
     """
     Команда для старта weekly review batch.
+    Показывает топ-50 информативных лидов для разметки.
     """
     user_id = message.from_user.id
     
@@ -101,8 +101,8 @@ async def show_next_lead(message: Message):
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{lead['text'][:800]}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 Predictions: {lead['predictions']}\n"
-        f"   Var: {lead['committee_variance']:.3f}"
+        f"🤖 Committee predictions: {lead.get('predictions', 'N/A')}\n"
+        f"   Variance: {lead.get('committee_variance', 0.0):.3f}"
     )
     
     await message.answer(text, reply_markup=keyboard)
@@ -119,7 +119,6 @@ async def handle_label(callback: CallbackQuery):
         return
     
     # Parse callback data
-    # format: label_ACTION_ID
     parts = callback.data.split("_")
     action = parts[1]
     lead_id = int(parts[2])
@@ -133,7 +132,7 @@ async def handle_label(callback: CallbackQuery):
         db.update_lead_label(
             lead_id=lead_id,
             is_lead=is_lead,
-            labeled_by=callback.from_user.username or str(user_id),
+            labeled_by=callback.from_user.username,
             labeled_at=callback.message.date
         )
         
@@ -182,15 +181,18 @@ async def complete_review_session(message: Message):
     # Проверить условия для retraining
     retrain_result = active_learner.trigger_retrain()
     
-    if retrain_result.get("retrain_triggered"):
+    if retrain_result["retrain_triggered"]:
         await message.answer(
             f"🚀 Запущено переобучение модели!\n"
             f"📊 Новых размеченных примеров: {retrain_result['new_labeled_count']}\n"
-            f"⏱️ Ожидаемое время: 5-10 минут\n"
+            f"⏱️ Ожидаемое время: 5-10 минут\n\n"
+            f"Вы получите уведомление по завершении."
         )
     else:
         await message.answer(
-            f"⏳ Недостаточно данных для переобучения: {retrain_result.get('reason')}"
+            f"⏳ Недостаточно данных для переобучения\n"
+            f"📊 Размечено: {retrain_result['new_labeled_count']}/50\n"
+            f"❓ {retrain_result['reason']}"
         )
     
     # Очистить session
