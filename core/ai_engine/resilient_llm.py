@@ -41,14 +41,14 @@ class ResilientLLMClient:
         # Circuit Breakers для каждого provider
         self.openrouter_breaker = CircuitBreaker(
             fail_max=5,                    # После 5 failures → OPEN
-            timeout_duration=60,           # Recovery через 60s
+            reset_timeout=60,              # Recovery через 60s
             expected_exception=Exception,
             name="openrouter_circuit"
         )
         
         self.ollama_breaker = CircuitBreaker(
             fail_max=3,                    # Ollama менее стабильный
-            timeout_duration=30,           # Быстрее восстановление
+            reset_timeout=30,              # Быстрее восстановление
             expected_exception=Exception,
             name="ollama_circuit"
         )
