@@ -98,17 +98,27 @@ class ActiveLearningPipeline:
         scored_leads = []
         for lead in candidates[:200]:
             try:
-                scores = self.calculate_informativeness(lead.text)
-                scored_leads.append({
+                # В VacancyDatabase.get_unlabeled_leads_since мы получаем объекты Lead
+                text = lead.text
+                if not text:
+                  continue
+                
+                scores_dict = self.calculate_informativeness(text)
+                # scores_dict возвращает dict с ключами "informativeness", "least_confidence", etc.
+                
+                # Добавляем метаданные
+                item = {
                     "lead_id": lead.id,
                     "message_id": lead.message_id,
-                    "text": lead.text,
+                    "text": text,
                     "source": lead.source_channel,
                     "timestamp": lead.timestamp,
-                    **scores
-                })
+                }
+                item.update(scores_dict) # Merge scores into item
+                
+                scored_leads.append(item)
             except Exception as e:
-                logger.error("informativeness_failed", lead_id=lead.id, error=str(e))
+                logger.error(f"informativeness_failed for lead {lead.id}: {e}")
         
         scored_leads.sort(key=lambda x: x["informativeness"], reverse=True)
         top_samples = scored_leads[:self.weekly_batch_size]
