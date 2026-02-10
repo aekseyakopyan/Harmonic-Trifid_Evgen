@@ -301,7 +301,7 @@ class TelegramVacancyParser:
         """Генерирует подробный markdown-отчет с учётом статистики из БД."""
         # Получаем статистику из базы данных
         db_stats = self.db.get_stats()
-        filepath = settings.REPORTS_DIR / filename
+        filepath = settings.DAILY_REPORTS_DIR / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"# 📊 Отчет по вакансиям (подробный)\n\n")
             f.write(f"**Дата:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
@@ -380,7 +380,7 @@ class TelegramVacancyParser:
 
     def generate_full_unfiltered_report(self, filename: str):
         """Генерирует максимально полный отчет без каких-либо фильтров"""
-        filepath = settings.REPORTS_DIR / filename
+        filepath = settings.PARSER_REPORTS_DIR / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"# 📜 ПОЛНЫЙ ДАМП СООБЩЕНИЙ (БЕЗ ФИЛЬТРОВ)\n\n")
             f.write(f"**Дата:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
