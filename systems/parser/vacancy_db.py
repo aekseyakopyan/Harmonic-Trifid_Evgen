@@ -380,23 +380,33 @@ class VacancyDatabase:
         return leads
 
     def get_unlabeled_leads_since(self, cutoff_time: datetime) -> List[Lead]:
-        """Получение неразмеченных лидов с определенной даты."""
+        """Получение неразмеченных лидов, которые еще не были проанализированы на информативность."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        
+        # Получаем лиды, у которых еще нет informativeness_score (или она 0)
         cursor.execute("""
-            SELECT id, hash, text, source, timestamp, message_id, chat_id, tier, 
-                   informativeness_score, needs_review, manual_label
-            FROM vacancies
-            WHERE last_seen > ? AND manual_label IS NULL
+            SELECT id, hash, text, source, last_seen, 0, 0, NULL, 
+                   informativeness_score, needs_review, manual_label, embedding
+            FROM vacancies 
+            WHERE last_seen > ? 
+              AND manual_label IS NULL
+              AND (informativeness_score IS NULL OR informativeness_score = 0)
         """, (cutoff_time.isoformat(),))
         
         leads = []
         for row in cursor.fetchall():
+            # Парсим timestamp из string (last_seen)
+            try:
+                ts = datetime.fromisoformat(row[4]).timestamp()
+            except:
+                ts = 0.0
+                
             leads.append(Lead(
                 id=row[0], hash=row[1], text=row[2], source_channel=row[3],
-                timestamp=row[4] or 0.0, message_id=row[5], chat_id=row[6],
+                timestamp=ts, message_id=row[5], chat_id=row[6],
                 tier=row[7], informativeness_score=row[8] or 0.0,
-                needs_review=bool(row[9]), manual_label=row[10]
+                needs_review=bool(row[9]), manual_label=row[10], embedding=row[11]
             ))
         conn.close()
         return leads
