@@ -1,13 +1,9 @@
-
-import time
-import os
-import re
-import sys
+from core.config.settings import settings
 
 # Пути к логам
-HIST_LOG = "logs/parsers/history_run.log"
-TODAY_LOG = "logs/parsers/today_run.log"
-JOIN_LOG = "logs/parsers/chat_joiner.log"
+HIST_LOG = settings.LOG_DIR / "parsers/history_run.log"
+TODAY_LOG = settings.LOG_DIR / "parsers/today_run.log"
+JOIN_LOG = settings.LOG_DIR / "parsers/chat_joiner.log"
 
 TOTAL_ESTIMATED_MSGS = 2600000
 
