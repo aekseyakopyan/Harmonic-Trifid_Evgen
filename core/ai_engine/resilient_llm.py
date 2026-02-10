@@ -131,27 +131,21 @@ class ResilientLLMClient:
                 return self._heuristic_only()
     
     async def _call_openrouter(self, prompt: str, text: str, timeout: int) -> dict:
-        @self.openrouter_breaker
-        async def protected_call():
-            return await self.primary_client.call_api(
-                model="deepseek/deepseek-chat",
-                prompt=prompt,
-                text=text,
-                timeout=timeout
-            )
-        
-        return await protected_call()
+        return await self.openrouter_breaker.call_async(
+            self.primary_client.call_api,
+            model="deepseek/deepseek-chat",
+            prompt=prompt,
+            text=text,
+            timeout=timeout
+        )
     
     async def _call_ollama(self, prompt: str, text: str, timeout: int) -> dict:
-        @self.ollama_breaker
-        async def protected_call():
-            return await self.primary_client.call_ollama(
-                prompt=prompt,
-                text=text,
-                timeout=timeout
-            )
-        
-        return await protected_call()
+        return await self.ollama_breaker.call_async(
+            self.primary_client.call_ollama,
+            prompt=prompt,
+            text=text,
+            timeout=timeout
+        )
     
     def _heuristic_only(self) -> dict:
         logger.warning(
