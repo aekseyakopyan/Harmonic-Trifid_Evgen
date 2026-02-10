@@ -29,7 +29,9 @@ def setup_structured_logger(name: str):
         cache_logger_on_first_use=True,
     )
     
+def get_logger(name: str):
+    """Возвращает структурированный логгер для модуля."""
     return structlog.get_logger(name)
 
-# Экспортируем логгер
-logger = setup_structured_logger("harmonic_trifid")
+# Экспортируем дефолтный логгер
+logger = get_logger("harmonic_trifid")
