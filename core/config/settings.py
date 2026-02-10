@@ -7,6 +7,37 @@ class Settings(BaseSettings):
     # Base directory
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
+    # System Paths
+    @property
+    def DATA_DIR(self) -> Path:
+        p = self.BASE_DIR / "data"
+        p.mkdir(exist_ok=True)
+        return p
+
+    @property
+    def LOG_DIR(self) -> Path:
+        p = self.BASE_DIR / "logs"
+        p.mkdir(exist_ok=True)
+        return p
+
+    @property
+    def SESSIONS_DIR(self) -> Path:
+        p = self.DATA_DIR / "sessions"
+        p.mkdir(exist_ok=True)
+        return p
+
+    @property
+    def DB_DIR(self) -> Path:
+        p = self.DATA_DIR / "db"
+        p.mkdir(exist_ok=True)
+        return p
+
+    @property
+    def REPORTS_DIR(self) -> Path:
+        p = self.BASE_DIR / "reports"
+        p.mkdir(exist_ok=True)
+        return p
+
     # Telegram User API
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
