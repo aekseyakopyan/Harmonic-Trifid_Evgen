@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from core.ai_engine.resilient_llm import resilient_llm_client
 from systems.parser.duplicate_detector import DuplicateDetector
-from systems.parser.entity_extractor import EntityExtractor
+from systems.parser.entity_extractor import EntityExtractor, extract_entities_hybrid
 from systems.parser.lead_scoring import calculate_lead_priority
 from systems.parser.ml_classifier import ml_classifier
 from systems.parser.bert_classifier import bert_classifier
@@ -613,8 +613,7 @@ async def filter_lead_advanced(
     # Финальные штрихи для принятых лидов
     if is_lead:
         # Извлечение сущностей
-        extractor = EntityExtractor()
-        entities = extractor.extract_all(text)
+        entities = extract_entities_hybrid(text)
         details["entities"] = entities
         
         # Расчет приоритета
