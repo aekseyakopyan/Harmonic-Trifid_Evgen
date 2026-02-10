@@ -148,6 +148,40 @@ class LLMClient:
             except httpx.ConnectError:
                 raise Exception("Ollama connection refused (Is it running?)")
 
+    async def call_api(self, model: str, prompt: str, text: str, timeout: float = 10.0) -> dict:
+        """Structured call to OpenRouter with integrated parsing."""
+        system_prompt = "Ты — экспертный фильтр лидов. Отвечай только СТРОГО валидным JSON."
+        full_prompt = f"{prompt}\n\nТЕКСТ СООБЩЕНИЯ:\n{text}"
+        
+        response = await self._generate_openrouter(model, full_prompt, system_prompt)
+        return self._parse_json_safe(response)
+
+    async def call_ollama(self, prompt: str, text: str, timeout: float = 10.0) -> dict:
+        """Structured call to local Ollama with integrated parsing."""
+        system_prompt = "Ты — экспертный фильтр лидов. Отвечай только СТРОГО валидным JSON."
+        full_prompt = f"{prompt}\n\nТЕКСТ СООБЩЕНИЯ:\n{text}"
+        
+        response = await self._generate_ollama(settings.OLLAMA_MODEL, full_prompt, system_prompt)
+        return self._parse_json_safe(response)
+
+    def _parse_json_safe(self, text: Optional[str]) -> dict:
+        """Безопасное извлечение JSON из текста ответа."""
+        if not text:
+            return {"is_real_lead": False, "role": "ERROR", "confidence": 0.0, "reason": "No response"}
+            
+        try:
+            # Очистка от markdown
+            clean_text = text.replace("```json", "").replace("```", "").strip()
+            import re
+            match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+            if match:
+                import json
+                return json.loads(match.group(0))
+        except Exception as e:
+            logger.error(f"JSON Parse error: {e}")
+        
+        return {"is_real_lead": False, "role": "PARSE_ERROR", "confidence": 0.0, "reason": "Failed to parse JSON"}
+
     def _validate_content(self, content: str, model_name: str) -> Optional[str]:
         if not content:
             return None
