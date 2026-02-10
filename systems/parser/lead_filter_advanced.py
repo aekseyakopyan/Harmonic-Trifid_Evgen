@@ -691,7 +691,8 @@ class LeadFilterAdvanced:
     """Wrapper class for lead filtering pipeline."""
     
     def __init__(self):
-        self.detector = DuplicateDetector()
+        self.db = VacancyDatabase()
+        self.detector = DuplicateDetector(db_manager=self.db)
         self.extractor = EntityExtractor()
         
     async def analyze(self, text: str, message_id: int = None, chat_id: int = None, source: str = "unknown") -> Dict[str, Any]:
