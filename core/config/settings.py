@@ -74,7 +74,20 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""  # For Whisper STT (optional)
 
     # Database
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite+aiosqlite:///data/db/bot_data.db"
+    
+    @property
+    def async_database_url(self) -> str:
+        """Returns absolute path for async database."""
+        if self.DATABASE_URL.startswith("sqlite"):
+            db_path = self.DATABASE_URL.split("///")[-1]
+            abs_path = self.BASE_DIR / db_path
+            return f"sqlite+aiosqlite:///{abs_path}"
+        return self.DATABASE_URL
+    
+    @property
+    def VACANCY_DB_PATH(self) -> Path:
+        return self.DB_DIR / "vacancies.db"
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
