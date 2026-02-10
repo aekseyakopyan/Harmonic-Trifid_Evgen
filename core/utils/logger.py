@@ -24,7 +24,8 @@ def setup_logger(name: str):
     handler.setFormatter(formatter)
     
     # File handler
-    file_handler = logging.FileHandler("logs/bot.log", encoding='utf-8')
+    log_file = settings.LOG_DIR / "bot.log"
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setFormatter(formatter)
     
     if not logger.handlers:
