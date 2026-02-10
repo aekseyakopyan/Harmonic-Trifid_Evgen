@@ -29,6 +29,22 @@ def run_gwen():
     from systems.gwen.commander import main
     asyncio.run(main())
 
+def run_celery_worker():
+    """Запуск Celery worker через CLI."""
+    import subprocess
+    print("=== Starting Celery Worker ===")
+    try:
+        subprocess.run([
+            "celery", "-A", "systems.parser.celery_config", 
+            "worker", 
+            "--loglevel=info", 
+            "--concurrency=4", 
+            "--queues=leads,notifications,maintenance"
+        ])
+    except KeyboardInterrupt:
+        print("\nCelery worker stopped")
+        sys.exit(0)
+
 def main():
     parser = argparse.ArgumentParser(description="Управление системой Amigos Bot")
     subparsers = parser.add_subparsers(dest="command", help="Команды")
@@ -43,6 +59,9 @@ def main():
     # Command: gwen
     subparsers.add_parser("gwen", help="Запуск системы Gwen (Коммандер)")
 
+    # Command: worker
+    subparsers.add_parser("worker", help="Запуск Celery worker")
+
     args = parser.parse_args()
 
     if args.command == "monitor":
@@ -54,6 +73,8 @@ def main():
             run_parser_history()
     elif args.command == "gwen":
         run_gwen()
+    elif args.command == "worker":
+        run_celery_worker()
     else:
         parser.print_help()
 
