@@ -26,6 +26,7 @@ class Lead:
     informativeness_score: float = 0.0
     needs_review: bool = False
     manual_label: bool = None
+    embedding: bytes = None
 
 
 class VacancyDatabase:
@@ -408,3 +409,58 @@ class VacancyDatabase:
         count = cursor.fetchone()[0]
         conn.close()
         return count
+
+    def update_lead_embedding(self, lead_id: int, embedding: bytes):
+        """Сохранить embedding для лида."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE vacancies SET embedding = ? WHERE id = ?", (embedding, lead_id))
+        conn.commit()
+        conn.close()
+
+    def get_leads_without_embeddings(self, limit: int = 1000) -> List[Lead]:
+        """Получить leads без embeddings для миграции."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, hash, text, source, timestamp, message_id, chat_id, tier, 
+                   informativeness_score, needs_review, manual_label, embedding
+            FROM vacancies 
+            WHERE embedding IS NULL 
+            LIMIT ?
+        """, (limit,))
+        
+        leads = []
+        for row in cursor.fetchall():
+            leads.append(Lead(
+                id=row[0], hash=row[1], text=row[2], source_channel=row[3],
+                timestamp=row[4] or 0.0, message_id=row[5], chat_id=row[6],
+                tier=row[7], informativeness_score=row[8] or 0.0,
+                needs_review=bool(row[9]), manual_label=row[10], embedding=row[11]
+            ))
+        conn.close()
+        return leads
+
+    def get_leads_since(self, cutoff_time: datetime, limit: int = 500) -> List[Lead]:
+        """Получение лидов с определенной даты."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, hash, text, source, timestamp, message_id, chat_id, tier, 
+                   informativeness_score, needs_review, manual_label, embedding
+            FROM vacancies
+            WHERE last_seen > ?
+            ORDER BY last_seen DESC
+            LIMIT ?
+        """, (cutoff_time.isoformat(), limit))
+        
+        leads = []
+        for row in cursor.fetchall():
+            leads.append(Lead(
+                id=row[0], hash=row[1], text=row[2], source_channel=row[3],
+                timestamp=row[4] or 0.0, message_id=row[5], chat_id=row[6],
+                tier=row[7], informativeness_score=row[8] or 0.0,
+                needs_review=bool(row[9]), manual_label=row[10], embedding=row[11]
+            ))
+        conn.close()
+        return leads
