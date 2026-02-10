@@ -38,6 +38,18 @@ class Settings(BaseSettings):
         p.mkdir(exist_ok=True)
         return p
 
+    @property
+    def DAILY_REPORTS_DIR(self) -> Path:
+        p = self.REPORTS_DIR / "daily_summaries"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def PARSER_REPORTS_DIR(self) -> Path:
+        p = self.REPORTS_DIR / "parsing_dumps"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
     # Telegram User API
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
