@@ -109,6 +109,10 @@ class EntityExtractor:
         
         return list(set(companies))
     
+    def extract_all(self, text: str) -> Dict[str, Any]:
+        """
+        Извлекает все сущности.
+        """
         return {
             "budget": self.extract_budget(text),
             "deadline": self.extract_deadline(text),
