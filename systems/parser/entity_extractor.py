@@ -1,6 +1,6 @@
-
 import re
 from typing import Dict, List, Optional, Any
+from core.utils.structured_logger import logger
 
 class EntityExtractor:
     """
@@ -109,13 +109,45 @@ class EntityExtractor:
         
         return list(set(companies))
     
-    def extract_all(self, text: str) -> Dict[str, Any]:
-        """
-        Извлекает все сущности.
-        """
         return {
             "budget": self.extract_budget(text),
             "deadline": self.extract_deadline(text),
             "contact": self.extract_contact_info(text),
             "companies": self.extract_company_name(text),
         }
+
+def extract_entities_hybrid(text: str) -> Dict:
+    """
+    Hybrid подход: сначала BERT NER, затем regex fallback.
+    
+    Returns:
+        Результаты с указанием метода извлечения
+    """
+    from systems.parser.bert_ner import bert_ner
+    
+    # Попытка 1: BERT NER
+    try:
+        bert_result = bert_ner.extract_all(text)
+        
+        # Если BERT дал результаты с high confidence → использовать
+        if bert_result["budget"]["confidence"] > 0.7:
+            return {
+                **bert_result,
+                "method": "bert_ner",
+                "fallback_used": False
+            }
+    except Exception as e:
+        logger.warning(f"bert_ner_failed: {str(e)[:200]}")
+    
+    # Попытка 2: Regex fallback (существующий EntityExtractor)
+    extractor = EntityExtractor()
+    regex_result = {
+        "budget": extractor.extract_budget(text),
+        "deadline": extractor.extract_deadline(text),
+        "contacts": extractor.extract_contact_info(text), # Note: renamed from contact to contacts for uniformity
+        "niche": {"primary": "unknown", "confidence": 0.0},
+        "method": "regex_fallback",
+        "fallback_used": True
+    }
+    
+    return regex_result
