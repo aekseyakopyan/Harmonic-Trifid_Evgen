@@ -83,7 +83,7 @@ class OutreachGenerator:
         
         # Берем принятые вакансии за последние 24 часа без черновика
         cursor.execute("""
-            SELECT hash, text, direction, source, last_seen 
+            SELECT hash, text, direction, source, last_seen, message_id 
             FROM vacancies 
             WHERE status = 'accepted' AND draft_response IS NULL
             ORDER BY last_seen DESC LIMIT 50
@@ -100,9 +100,9 @@ class OutreachGenerator:
         now = datetime.now(timezone.utc)
         count = 0
         
-        for v_hash, v_text, v_dir, v_source, last_seen in pending:
+        for v_hash, v_text, v_dir, v_source, last_seen, v_msg_id in pending:
             # AI Check: Действительно ли это качественная вакансия?
-            filter_result = await filter_lead_advanced(v_text, v_source, v_dir, use_llm_for_uncertain=True)
+            filter_result = await filter_lead_advanced(v_text, v_source, v_dir, message_id=v_msg_id or 0, use_llm_for_uncertain=True)
             is_valid = filter_result["is_lead"]
             
             if is_valid:
