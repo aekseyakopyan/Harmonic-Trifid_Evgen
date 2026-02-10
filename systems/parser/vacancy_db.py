@@ -7,7 +7,25 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
+import pandas as pd
+from dataclasses import dataclass
 from core.config.settings import settings
+
+
+@dataclass
+class Lead:
+    """Простая обертка для данных лида из БД."""
+    id: int
+    hash: str
+    text: str
+    source_channel: str
+    timestamp: float
+    message_id: int = None
+    chat_id: int = None
+    tier: str = None
+    informativeness_score: float = 0.0
+    needs_review: bool = False
+    manual_label: bool = None
 
 
 class VacancyDatabase:
@@ -297,3 +315,96 @@ class VacancyDatabase:
         
         conn.close()
         return results
+
+    # ==========================================
+    # ACTIVE LEARNING METHODS
+    # ==========================================
+
+    def update_lead_informativeness(self, lead_id: int, informativeness: float, needs_review: bool = True):
+        """Обновление score информативности."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE vacancies 
+            SET informativeness_score = ?, needs_review = ?
+            WHERE id = ?
+        """, (informativeness, 1 if needs_review else 0, lead_id))
+        conn.commit()
+        conn.close()
+
+    def update_lead_label(self, lead_id: int, is_lead: bool, labeled_by: str, labeled_at: datetime):
+        """Сохранение ручной разметки."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE vacancies 
+            SET manual_label = ?, labeled_by = ?, labeled_at = ?, needs_review = 0
+            WHERE id = ?
+        """, (1 if is_lead else 0, labeled_by, labeled_at.isoformat(), lead_id))
+        conn.commit()
+        conn.close()
+
+    def get_labeled_data(self) -> pd.DataFrame:
+        """Получение всех размеченных данных для обучения."""
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("""
+            SELECT text, manual_label as is_lead
+            FROM vacancies
+            WHERE manual_label IS NOT NULL
+        """, conn)
+        conn.close()
+        return df
+
+    def get_recent_leads(self, hours: int = 24) -> List[Lead]:
+        """Получение последних лидов за временное окно."""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, hash, text, source, timestamp, message_id, chat_id, tier, 
+                   informativeness_score, needs_review, manual_label
+            FROM vacancies
+            WHERE last_seen > ?
+        """, (cutoff,))
+        
+        leads = []
+        for row in cursor.fetchall():
+            leads.append(Lead(
+                id=row[0], hash=row[1], text=row[2], source_channel=row[3],
+                timestamp=row[4] or 0.0, message_id=row[5], chat_id=row[6],
+                tier=row[7], informativeness_score=row[8] or 0.0,
+                needs_review=bool(row[9]), manual_label=row[10]
+            ))
+        conn.close()
+        return leads
+
+    def get_unlabeled_leads_since(self, cutoff_time: datetime) -> List[Lead]:
+        """Получение неразмеченных лидов с определенной даты."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, hash, text, source, timestamp, message_id, chat_id, tier, 
+                   informativeness_score, needs_review, manual_label
+            FROM vacancies
+            WHERE last_seen > ? AND manual_label IS NULL
+        """, (cutoff_time.isoformat(),))
+        
+        leads = []
+        for row in cursor.fetchall():
+            leads.append(Lead(
+                id=row[0], hash=row[1], text=row[2], source_channel=row[3],
+                timestamp=row[4] or 0.0, message_id=row[5], chat_id=row[6],
+                tier=row[7], informativeness_score=row[8] or 0.0,
+                needs_review=bool(row[9]), manual_label=row[10]
+            ))
+        conn.close()
+        return leads
+
+    def get_new_labeled_count_since_last_train(self) -> int:
+        """Подсчет новых размеченных примеров (заглушка: берет все размеченные)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM vacancies WHERE manual_label IS NOT NULL")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
