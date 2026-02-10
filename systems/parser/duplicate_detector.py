@@ -38,6 +38,9 @@ class DuplicateDetector:
     
     def __init__(self, db_manager=None):
         if self._initialized:
+            if db_manager is not None and self.db is None:
+                self.db = db_manager
+                logger.debug("duplicate_detector_db_updated")
             return
         
         self.db = db_manager
