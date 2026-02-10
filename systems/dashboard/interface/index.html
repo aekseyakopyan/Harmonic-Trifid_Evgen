@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Алексей - Dashboard</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <h1>🤖 Алексей</h1>
+                <p>AI Marketing Bot</p>
+            </div>
+            <nav class="nav">
+                <a href="#dashboard" class="nav-item active" data-view="dashboard">
+                    <span class="icon">📊</span>
+                    Dashboard
+                </a>
+                <a href="#leads" class="nav-item" data-view="leads">
+                    <span class="icon">👥</span>
+                    Лиды
+                </a>
+                <a href="#cases" class="nav-item" data-view="cases">
+                    <span class="icon">💼</span>
+                    Кейсы
+                </a>
+                <a href="#services" class="nav-item" data-view="services">
+                    <span class="icon">🎯</span>
+                    Услуги
+                </a>
+                <a href="#parser" class="nav-item" data-view="parser">
+                    <span class="icon">🔍</span>
+                    Парсер
+                </a>
+                <a href="#settings" class="nav-item" data-view="settings">
+                    <span class="icon">⚙️</span>
+                    Настройки
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard View -->
+            <div id="dashboard-view" class="view active">
+                <header class="page-header">
+                    <h2>Dashboard</h2>
+                    <div class="status">
+                        <span class="status-indicator"></span>
+                        API: <span id="api-status">Проверка...</span>
+                    </div>
+                </header>
+
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon">👤</div>
+                        <div class="metric-info">
+                            <h3 id="total-leads">-</h3>
+                            <p>Всего лидов</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">💬</div>
+                        <div class="metric-info">
+                            <h3 id="active-dialogues">-</h3>
+                            <p>Активные диалоги</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">📨</div>
+                        <div class="metric-info">
+                            <h3 id="total-messages">-</h3>
+                            <p>Всего сообщений</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">📈</div>
+                        <div class="metric-info">
+                            <h3 id="messages-today">-</h3>
+                            <p>Сегодня сообщений</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Недавняя активность</h3>
+                    <div id="recent-activity" class="activity-list">
+                        <div class="loading">Загрузка...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Leads View -->
+            <div id="leads-view" class="view">
+                <header class="page-header">
+                    <h2>Лиды</h2>
+                    <input type="text" id="leads-search" placeholder="🔍 Поиск по имени или username..."
+                        class="search-input">
+                </header>
+                <div id="leads-table" class="data-table">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Cases View -->
+            <div id="cases-view" class="view">
+                <header class="page-header">
+                    <h2>Кейсы</h2>
+                    <button id="add-case-btn" class="btn-primary">+ Добавить кейс</button>
+                </header>
+                <div id="cases-grid" class="cases-grid">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Services View -->
+            <div id="services-view" class="view">
+                <header class="page-header">
+                    <h2>Услуги и кейсы</h2>
+                </header>
+                <div id="services-accordion" class="services-list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div id="settings-view" class="view">
+                <header class="page-header">
+                    <h2>Настройки</h2>
+                </header>
+
+                <div class="section outreach-controls">
+                    <h3>📢 Управление рассылкой (Алексей Outreach)</h3>
+                    <div class="control-group">
+                        <label class="switch-label">
+                            <input type="checkbox" id="outreach-enabled">
+                            <span class="slider"></span>
+                            Включить автоматическую рассылку (РУБИЛЬНИК)
+                        </label>
+                    </div>
+
+                    <div class="control-group">
+                        <label class="switch-label">
+                            <input type="checkbox" id="outreach-test-mode" checked>
+                            <span class="slider"></span>
+                            Режим тестирования (только выбранные чаты)
+                        </label>
+                    </div>
+
+                    <div class="control-group">
+                        <label for="outreach-test-chat-id">ID тестового чата:</label>
+                        <input type="number" id="outreach-test-chat-id" placeholder="-100..." class="input-field">
+                        <p class="note">💡 В режиме теста бот будет писать [только сюда].</p>
+                    </div>
+
+                    <button id="save-outreach-settings" class="btn-primary">Сохранить настройки рассылки</button>
+                    <div id="outreach-save-status" class="save-status"></div>
+                </div>
+
+                <div class="section">
+                    <h3>System Prompt</h3>
+                    <textarea id="system-prompt" rows="20" class="prompt-editor" readonly>Загрузка...</textarea>
+                    <p class="note">💡 Для редактирования промпта измените файл config/prompts.py</p>
+                </div>
+            </div>
+
+            <!-- Parser View -->
+            <div id="parser-view" class="view">
+                <header class="page-header">
+                    <h2>🔍 Парсер Вакансий</h2>
+                    <div class="status">
+                        <span class="status-indicator" id="parser-status-indicator"></span>
+                        <span id="parser-status-text">Загрузка...</span>
+                    </div>
+                </header>
+
+                <!-- Emergency Kill Switch -->
+                <div class="emergency-section">
+                    <div class="emergency-card">
+                        <div class="emergency-icon">🚨</div>
+                        <div class="emergency-content">
+                            <h3>Emergency Stop</h3>
+                            <p id="parser-current-activity">Статус загружается...</p>
+                        </div>
+                        <button id="parser-toggle-btn" class="emergency-btn">ОСТАНОВИТЬ</button>
+                    </div>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon">📋</div>
+                        <div class="metric-info">
+                            <h3 id="parser-vacancies-found">-</h3>
+                            <p>Найдено вакансий сегодня</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">📤</div>
+                        <div class="metric-info">
+                            <h3 id="parser-responses-sent">-</h3>
+                            <p>Отправлено откликов</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">✅</div>
+                        <div class="metric-info">
+                            <h3 id="parser-success-rate">-</h3>
+                            <p>Успешность (%)</p>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">⏰</div>
+                        <div class="metric-info">
+                            <h3 id="parser-last-run">-</h3>
+                            <p>Последний запуск</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Vacancies -->
+                <div class="section">
+                    <h3>📝 Последние найденные вакансии</h3>
+                    <div id="recent-vacancies-container">
+                        <div class="loading">Загрузка...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal for lead details -->
+    <div id="lead-modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close">&times;</span>
+            <h2 id="modal-lead-name">История диалога</h2>
+            <div id="modal-messages" class="messages-container">
+                <div class="loading">Загрузка...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+</body>
+
+</html>

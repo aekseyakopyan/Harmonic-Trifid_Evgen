@@ -1,0 +1,9 @@
+datasets
+pandas
+tqdm
+requests
+zstandard
+jsonlines
+torch
+transformers
+accelerate

@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Telegram Sessions
+*.session
+*.session-journal
+admin_notifier.session
+temp_notify.session
+userbot_session.session
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/*.log
+*.log
+
+# Environment
+.env
+
+# Temporary files
+chat_ids.txt
+telegram_chats.txt
+parsed_messages/
+temp_notify*
+admin_notifier*
+
+# Data
+data/
+audio/
+analytics/
+*.json
+*.xlsx
