@@ -128,6 +128,9 @@ def extract_entities_hybrid(text: str) -> Dict:
         Результаты с указанием метода извлечения
     """
     from systems.parser.bert_ner import bert_ner
+    from core.utils.structured_logger import get_logger
+    
+    logger = get_logger(__name__)
     
     # Попытка 1: BERT NER
     try:
@@ -148,10 +151,11 @@ def extract_entities_hybrid(text: str) -> Dict:
     regex_result = {
         "budget": extractor.extract_budget(text),
         "deadline": extractor.extract_deadline(text),
-        "contacts": extractor.extract_contact_info(text), # Note: renamed from contact to contacts for uniformity
+        "contacts": extractor.extract_contact_info(text), # Changed to match regex usage
         "niche": {"primary": "unknown", "confidence": 0.0},
         "method": "regex_fallback",
-        "fallback_used": True
+        "fallback_used": True,
+        "extraction_time_ms": 0
     }
     
     return regex_result
