@@ -1,104 +1,192 @@
-import pybreaker
-import httpx
-from typing import Optional, Dict, Any
-from core.config.settings import settings
-from core.utils.logger import logger
+"""
+Resilient LLM Client с Circuit Breaker pattern для защиты от API failures.
+Автоматический fallback: OpenRouter → Ollama → Heuristic-only
+"""
 
-# Исключения для Circuit Breaker
-class LLMAPIError(Exception):
-    pass
+from pybreaker import CircuitBreaker
+from core.ai_engine.llm_client import LLMClient
+from core.utils.structured_logger import get_logger
+import time
+import asyncio
 
-# Настройка Circuit Breaker
-api_breaker = pybreaker.CircuitBreaker(
-    fail_max=5,              # После 5 ошибок → OPEN
-    timeout_duration=60,     # Recovery через 60 секунд
-    expected_exception=LLMAPIError,
-    name="llm_circuit_breaker"
-)
+logger = get_logger(__name__)
+
 
 class ResilientLLMClient:
     """
-    Клиент для ИИ-моделей с поддержкой Circuit Breaker и Fallback-цепочки.
-    CLOSED → OPEN → HALF_OPEN
+    LLM клиент с защитой от сбоев через Circuit Breaker pattern.
+    
+    Состояния circuit breaker:
+    - CLOSED: нормальная работа, все запросы идут к primary API
+    - OPEN: после 5 failures, все запросы блокируются на 60s
+    - HALF_OPEN: пробный запрос для проверки восстановления
     """
     
+    _instance = None
+    
+    def __new__(cls):
+        """Singleton pattern для переиспользования circuit breakers"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
     def __init__(self):
-        self.api_key = settings.OPENROUTER_API_KEY
-        self.model = settings.OPENROUTER_MODEL or "deepseek/deepseek-chat"
-        self.base_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://harmonic-trifid.local",
-            "X-Title": "Harmonic Trifid Resilient"
-        }
-
-    @api_breaker
-    async def _call_openrouter(self, model: str, prompt: str, system_prompt: str) -> str:
-        """Метод обернутый в Circuit Breaker для вызова внешнего API."""
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 4096
-        }
+        if self._initialized:
+            return
         
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client: # Уменьшаем таймаут до 10с для fail-fast
-                response = await client.post(self.base_url, headers=self.headers, json=payload)
-                
-                if response.status_code == 429:
-                    raise LLMAPIError("Rate limit exceeded")
-                if response.status_code >= 500:
-                    raise LLMAPIError(f"Server error: {response.status_code}")
-                
-                response.raise_for_status()
-                data = response.json()
-                
-                if "choices" in data and len(data["choices"]) > 0:
-                    return data["choices"][0]["message"]["content"]
-                
-                raise LLMAPIError("Empty response from provider")
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            raise LLMAPIError(f"Network error: {str(e)}")
-
-    async def generate_response(self, prompt: str, system_prompt: str = "You are a helpful assistant.") -> Optional[str]:
-        """Генерация с многоуровневым Fallback."""
+        # Primary LLM client
+        self.primary_client = LLMClient()
         
-        # 1. Попытка через OpenRouter (с Circuit Breaker)
-        try:
-            return await self._call_openrouter(self.model, prompt, system_prompt)
-        except pybreaker.CircuitBreakerError:
-            logger.warning("🚨 [CB] OpenRouter Circuit is OPEN. Failing fast to fallback.")
-        except Exception as e:
-            logger.error(f"❌ [CB] OpenRouter call failed: {e}")
-
-        # 2. Fallback на локальную Ollama (если OpenRouter недоступен)
-        logger.info("🔄 Switching to local Ollama fallback...")
-        return await self._generate_ollama(settings.OLLAMA_MODEL, prompt, system_prompt)
-
-    async def _generate_ollama(self, model: str, prompt: str, system_prompt: str) -> Optional[str]:
-        """Локальный fallback-механизм."""
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False
+        # Circuit Breakers для каждого provider
+        self.openrouter_breaker = CircuitBreaker(
+            fail_max=5,                    # После 5 failures → OPEN
+            timeout_duration=60,           # Recovery через 60s
+            expected_exception=Exception,
+            name="openrouter_circuit"
+        )
+        
+        self.ollama_breaker = CircuitBreaker(
+            fail_max=3,                    # Ollama менее стабильный
+            timeout_duration=30,           # Быстрее восстановление
+            expected_exception=Exception,
+            name="ollama_circuit"
+        )
+        
+        self._initialized = True
+        
+        logger.info(
+            "resilient_llm_initialized",
+            openrouter_state="closed",
+            ollama_state="closed"
+        )
+    
+    @property
+    def circuit_state(self) -> dict:
+        """
+        Текущее состояние circuit breakers.
+        
+        Returns:
+            {"openrouter": "closed|open|half_open", "ollama": "..."}
+        """
+        return {
+            "openrouter": str(self.openrouter_breaker.current_state),
+            "ollama": str(self.ollama_breaker.current_state)
         }
+    
+    async def call_with_fallback(
+        self,
+        prompt: str,
+        text: str,
+        timeout: int = 10
+    ) -> dict:
+        """
+        Multi-level fallback для максимальной надежности.
+        """
+        start_time = time.time()
+        
+        # Попытка 1: OpenRouter
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(settings.OLLAMA_URL, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("message", {}).get("content", "")
+            result = await self._call_openrouter(prompt, text, timeout)
+            result["method"] = "openrouter"
+            result["latency_ms"] = int((time.time() - start_time) * 1000)
+            
+            logger.info(
+                "llm_call_success",
+                provider="openrouter",
+                latency_ms=result["latency_ms"],
+                circuit_state=self.openrouter_breaker.current_state
+            )
+            return result
+            
         except Exception as e:
-            logger.error(f"🔥 Critical: Local Ollama fallback also failed: {e}")
-            return None
+            logger.warning(
+                "llm_primary_failed",
+                provider="openrouter",
+                circuit_state=self.openrouter_breaker.current_state,
+                error=str(e)[:200]
+            )
+            
+            # Попытка 2: Ollama fallback
+            try:
+                result = await self._call_ollama(prompt, text, timeout)
+                result["method"] = "ollama_fallback"
+                result["latency_ms"] = int((time.time() - start_time) * 1000)
+                
+                logger.info(
+                    "llm_fallback_success",
+                    provider="ollama",
+                    latency_ms=result["latency_ms"],
+                    circuit_state=self.ollama_breaker.current_state
+                )
+                return result
+                
+            except Exception as e2:
+                logger.error(
+                    "llm_all_failed",
+                    openrouter_state=self.openrouter_breaker.current_state,
+                    ollama_state=self.ollama_breaker.current_state,
+                    error=str(e2)[:200]
+                )
+                
+                # Попытка 3: Heuristic-only fallback
+                return self._heuristic_only()
+    
+    async def _call_openrouter(self, prompt: str, text: str, timeout: int) -> dict:
+        @self.openrouter_breaker
+        async def protected_call():
+            return await self.primary_client.call_api(
+                model="deepseek/deepseek-chat",
+                prompt=prompt,
+                text=text,
+                timeout=timeout
+            )
+        
+        return await protected_call()
+    
+    async def _call_ollama(self, prompt: str, text: str, timeout: int) -> dict:
+        @self.ollama_breaker
+        async def protected_call():
+            return await self.primary_client.call_ollama(
+                prompt=prompt,
+                text=text,
+                timeout=timeout
+            )
+        
+        return await protected_call()
+    
+    def _heuristic_only(self) -> dict:
+        logger.warning(
+            "llm_heuristic_fallback",
+            reason="all_providers_unavailable"
+        )
+        
+        return {
+            "is_real_lead": None,
+            "confidence": 0.5,
+            "role": "unknown",
+            "reason": "All LLM providers unavailable, using heuristic scoring only",
+            "method": "heuristic_fallback",
+            "red_flags": [],
+            "latency_ms": 0
+        }
+    
+    def get_health_status(self) -> dict:
+        openrouter_state = str(self.openrouter_breaker.current_state)
+        ollama_state = str(self.ollama_breaker.current_state)
+        
+        return {
+            "healthy": openrouter_state != "open" or ollama_state != "open",
+            "openrouter": {
+                "state": openrouter_state,
+                "fail_counter": self.openrouter_breaker.fail_counter
+            },
+            "ollama": {
+                "state": ollama_state,
+                "fail_counter": self.ollama_breaker.fail_counter
+            }
+        }
 
-# Singleton
-resilient_llm = ResilientLLMClient()
+
+# Singleton instance для глобального использования
+resilient_llm_client = ResilientLLMClient()
