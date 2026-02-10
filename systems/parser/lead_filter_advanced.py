@@ -6,7 +6,7 @@ import ast
 from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse
 
-from core.ai_engine.llm_client import llm_client
+from core.ai_engine.resilient_llm import resilient_llm_client
 from systems.parser.duplicate_detector import DuplicateDetector
 from systems.parser.entity_extractor import EntityExtractor
 from systems.parser.lead_scoring import calculate_lead_priority
@@ -476,40 +476,12 @@ async def llm_deep_analysis(text: str, features: Dict[str, Any], score: int) -> 
     
     system_prompt = "Ты — экспертный фильтр лидов для digital-маркетинга. Отвечай только валидным JSON."
     
-    try:
-        response = await llm_client.generate_response(prompt, system_prompt)
-        
-        # Очистка от markdown
-        response = response.replace("```json", "").replace("```", "").strip()
-        
-        # Извлечение JSON
-        match = re.search(r'\{.*\}', response, re.DOTALL)
-        if not match:
-             return {
-                "is_real_lead": False,
-                "role": "PARSE_ERROR",
-                "confidence": 0.0,
-                "reason": "LLM response parse failed (no JSON found)",
-                "red_flags": []
-            }
-        
-        json_str = match.group(0)
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            try:
-                # Fallback: try to parse python dict syntax (single quotes)
-                data = ast.literal_eval(json_str)
-            except Exception:
-                 return {
-                    "is_real_lead": False,
-                    "role": "PARSE_ERROR",
-                    "confidence": 0.0,
-                    "reason": "LLM response JSON decode failed",
-                    "red_flags": []
-                }
-                
-        return data
+    # Используем ResilientLLMClient с автоматическим fallback и защитой
+    return await resilient_llm_client.call_with_fallback(
+        prompt=prompt,
+        text=text,
+        timeout=10
+    )
         
     except Exception as e:
         return {
