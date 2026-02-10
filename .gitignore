@@ -66,14 +66,19 @@ admin_notifier*
 data/
 backups/
 reports/
-*.json
+logs/
 *.xlsx
 *.db
 *.db-shm
 *.db-wal
 
-# Documentation
+# Ignore dynamic data/logs but keep config
+!core/config/*.json
+!systems/**/*.json
+
+# Documentation & Workflows
 *.md
 !README.md
 !TWA_GUIDE.md
-!docs/*.md
+!docs/**/*.md
+!.agent/workflows/*.md
