@@ -13,7 +13,7 @@ from collections import defaultdict
 # Add project root to sys.path to allow running as a script
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from core.utils.logger import get_logger
+from core.utils.structured_logger import get_logger
 
 logger = get_logger("rate_limiter")
 
