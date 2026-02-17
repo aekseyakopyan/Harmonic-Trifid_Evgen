@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 async def migrate():
     db = VacancyDatabase()
+    await db.init_db()
     detector = get_duplicate_detector(db_manager=db)
     
     print("🔄 Checking for leads without embeddings...")
@@ -16,7 +17,7 @@ async def migrate():
     
     while True:
         # Get leads specifically missing embeddings
-        leads_to_process = await asyncio.to_thread(db.get_leads_without_embeddings, batch_size)
+        leads_to_process = await db.get_leads_without_embeddings(batch_size)
         
         if not leads_to_process:
             if total_processed == 0:
