@@ -516,6 +516,7 @@ async def filter_lead_advanced(
     if use_deduplication:
         # Initialize detector with DB manager (singleton handles reuse)
         db = VacancyDatabase()
+        await db.init_db()
         detector = DuplicateDetector(db_manager=db)
         
         is_dup, similarity, method = await detector.is_duplicate(
