@@ -181,7 +181,7 @@ async def run_automated_outreach(client: TelegramClient):
                 from core.utils.admin_notifier import AdminNotifier
                 notifier = AdminNotifier(client)
                 await notifier.notify_error(e, "Фоновая задача: автоматическая рассылка откликов")
-            except Exception as e:  
+            except:
                 pass
             await asyncio.sleep(300)
 
@@ -291,7 +291,7 @@ async def run_follow_ups(client: TelegramClient):
                 from core.utils.admin_notifier import AdminNotifier
                 notifier = AdminNotifier(client)
                 await notifier.notify_error(e, "Фоновая задача: автоматические follow-ups")
-            except Exception as e:  
+            except:
                 pass
             
         await asyncio.sleep(3600) 

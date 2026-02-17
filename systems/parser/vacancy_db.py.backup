@@ -399,7 +399,7 @@ class VacancyDatabase:
             # Парсим timestamp из string (last_seen)
             try:
                 ts = datetime.fromisoformat(row[4]).timestamp()
-            except Exception as e:  
+            except:
                 ts = 0.0
                 
             leads.append(Lead(

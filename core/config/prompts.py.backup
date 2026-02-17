@@ -15,7 +15,7 @@ def _load_prompt(filename: str) -> str:
         try:
             with open(fallback_path, "r", encoding="utf-8") as f:
                 return f.read().strip()
-        except Exception as e:  
+        except:
             return ""
 
 # Загружаем промпты из файлов

@@ -163,7 +163,7 @@ async def wait_and_process(client, sender_id):
                     "id": sender_id
                 }
             )
-        except Exception as e:  
+        except:
             pass  # Не падаем, если уведомление не отправилось
     finally:
         if debounce_tasks.get(sender_id) == asyncio.current_task():

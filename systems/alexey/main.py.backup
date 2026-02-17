@@ -79,7 +79,7 @@ async def on_new_message(event):
                     "id": sender.id if sender else 0
                 }
             )
-        except Exception as e:  
+        except:
             pass
 
 @client.on(events.NewMessage(outgoing=True))

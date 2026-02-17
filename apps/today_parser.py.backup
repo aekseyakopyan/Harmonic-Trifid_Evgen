@@ -212,7 +212,7 @@ class TelegramVacancyParser:
                 if sender and isinstance(sender, User) and hasattr(sender, 'username'):
                     sender_username = sender.username
                     sender_is_user = True
-            except Exception as e:  
+            except:
                 pass
             
             # Извлекаем контакт

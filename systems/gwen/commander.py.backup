@@ -851,7 +851,7 @@ class GwenCommander:
                             direction = v_dir or "Digital Marketing"
                         else:
                             direction = "Digital Marketing"
-                    except Exception as e:  
+                    except:
                         direction = "Digital Marketing"
 
                     await event.edit("⏳ <i>Гвен пишет черновик...</i>", parse_mode='html')
@@ -873,7 +873,7 @@ class GwenCommander:
                 if "tg://user?id=" in v_contact:
                     try:
                         destination = int(v_contact.split('=')[-1])
-                    except Exception as e:  
+                    except:
                         pass
                 
                 if not destination:
