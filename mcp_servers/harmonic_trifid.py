@@ -234,7 +234,7 @@ class HarmonicTrifidMCP:
                     'functions': functions,
                     'lines': file_ctx.lines
                 }
-            except:
+            except Exception:
                 structure[file_ctx.path] = {'error': 'Failed to parse'}
         
         return structure
