@@ -4,9 +4,15 @@ Telegram Rate Limiter - улучшенная реализация Token Bucket �
 """
 import time
 import asyncio
+import os
+import sys
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
+
+# Add project root to sys.path to allow running as a script
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 from core.utils.logger import get_logger
 
 logger = get_logger("rate_limiter")

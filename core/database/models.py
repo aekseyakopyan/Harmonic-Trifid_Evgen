@@ -56,6 +56,11 @@ class Lead(Base, TimestampMixin):
     is_human_managed: Mapped[bool] = mapped_column(Boolean, default=False)
     handover_reason: Mapped[Optional[str]] = mapped_column(String(255))
 
+    # New Fields for TODO tasks
+    tier: Mapped[Optional[str]] = mapped_column(String(20), default="COLD")
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    meeting_scheduled: Mapped[bool] = mapped_column(Boolean, default=False)
+
 class MessageLog(Base, TimestampMixin):
     __tablename__ = "message_logs"
     
