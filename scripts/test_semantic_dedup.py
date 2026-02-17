@@ -179,6 +179,7 @@ async def test_integration():
     from systems.parser.vacancy_db import VacancyDatabase
     
     db = VacancyDatabase()
+    await db.init_db()
     detector = get_duplicate_detector(db_manager=db)
     
     if not detector.semantic_enabled:
