@@ -222,10 +222,7 @@ class DuplicateDetector:
         cutoff_time = datetime.now() - timedelta(hours=self.time_window_hours)
         
         try:
-            # VacancyDatabase methods are synchronous but we call them in thread to avoid blocking loop if needed
-            # For simplicity, since it's sqlite, we just call them (blocking).
-            recent_leads = await asyncio.to_thread(
-                self.db.get_leads_since,
+            recent_leads = await self.db.get_leads_since(
                 cutoff_time,
                 limit=500
             )
@@ -375,8 +372,7 @@ class DuplicateDetector:
                 for lead, embedding in zip(batch, embeddings):
                     serialized = self.serialize_embedding(embedding)
                     
-                    await asyncio.to_thread(
-                        self.db.update_lead_embedding,
+                    await self.db.update_lead_embedding(
                         lead_id=lead.id,
                         embedding=serialized
                     )
