@@ -176,50 +176,41 @@ class VacancyDatabase:
         Returns:
             True если успешно добавлено, False если уже существует
         """
+    async def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None) -> bool:
+        """Добавляет отклонённую вакансию в базу."""
         vacancy_hash = self._generate_hash(text)
         if date is None:
             date = datetime.now().isoformat()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("""
-                INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
-                VALUES (?, 'rejected', ?, ?, NULL, NULL, NULL, ?, ?, ?)
-            """, (vacancy_hash, text, source, reason, date, date))
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            # Вакансия уже существует, обновляем last_seen
-            cursor.execute("""
-                UPDATE vacancies SET last_seen = ? WHERE hash = ?
-            """, (date, vacancy_hash))
-            conn.commit()
-            return False
-        finally:
-            conn.close()
-    
-    def get_stats(self) -> Dict[str, int]:
-        """
-        Получает статистику по всей базе данных.
-        
-        Returns:
-            Словарь со статистикой: total, accepted, rejected
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT COUNT(*) FROM vacancies")
-        total = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM vacancies WHERE status = 'accepted'")
-        accepted = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM vacancies WHERE status = 'rejected'")
-        rejected = cursor.fetchone()[0]
-        
-        conn.close()
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
+                    VALUES (?, 'rejected', ?, ?, NULL, NULL, NULL, ?, ?, ?)
+                """, (vacancy_hash, text, source, reason, date, date))
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                await db.execute("""
+                    UPDATE vacancies SET last_seen = ? WHERE hash = ?
+                """, (date, vacancy_hash))
+                await db.commit()
+                return False
+
+    async def get_stats(self) -> Dict[str, int]:
+        """Получает статистику по всей базе данных."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM vacancies") as cursor:
+                row = await cursor.fetchone()
+                total = row[0]
+            
+            async with db.execute("SELECT COUNT(*) FROM vacancies WHERE status = 'accepted'") as cursor:
+                row = await cursor.fetchone()
+                accepted = row[0]
+            
+            async with db.execute("SELECT COUNT(*) FROM vacancies WHERE status = 'rejected'") as cursor:
+                row = await cursor.fetchone()
+                rejected = row[0]
         
         return {
             'total': total,
