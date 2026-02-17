@@ -9,9 +9,13 @@ sys.path.append(os.getcwd())
 
 from systems.alexey.rate_limiter import TelegramRateLimiter
 from systems.parser.vacancy_db import VacancyDatabase
-from systems.dashboard.routes.dashboard import get_dashboard_metrics
-from core.database.models import Base
-from sqlalchemy.ext.asyncio import create_async_session, async_sessionmaker, create_async_engine
+try:
+    from systems.dashboard.routes.dashboard import get_dashboard_metrics
+    from core.database.models import Base
+    from sqlalchemy.ext.asyncio import create_async_session, async_sessionmaker, create_async_engine
+    HAS_SQLALCHEMY = True
+except ImportError:
+    HAS_SQLALCHEMY = False
 
 async def test_rate_limiter():
     print("--- Testing TelegramRateLimiter ---")
