@@ -478,13 +478,14 @@ async def llm_deep_analysis(text: str, features: Dict[str, Any], score: int) -> 
     system_prompt = "Ты — экспертный фильтр лидов для digital-маркетинга. Отвечай только валидным JSON."
     
     # Используем ResilientLLMClient с автоматическим fallback и защитой
-    return await resilient_llm_client.call_with_fallback(
-        prompt=prompt,
-        text=text,
-        timeout=10
-    )
-        
+    try:
+        return await resilient_llm_client.call_with_fallback(
+            prompt=prompt,
+            text=text,
+            timeout=10
+        )
     except Exception as e:
+        logger.error(f"LLM analysis error: {e}")
         return {
             "is_real_lead": False,
             "role": "ERROR",
@@ -492,6 +493,7 @@ async def llm_deep_analysis(text: str, features: Dict[str, Any], score: int) -> 
             "reason": f"LLM error: {str(e)}",
             "red_flags": []
         }
+
 
 # ==========================================
 # MAIN PIPELINE
@@ -659,6 +661,14 @@ async def filter_lead_advanced(
             "details": details
         }
     else:
+        result = {
+            "is_lead": False,
+            "confidence": confidence,
+            "reason": reason,
+            "stage": stage,
+            "details": details
+        }
+    
     # Structured Logging
     log_data = {
         "event": "lead_classified",
@@ -685,6 +695,7 @@ async def filter_lead_advanced(
     logger.info("lead_classification_complete", **log_data)
         
     return result
+
 
 
 class LeadFilterAdvanced:
