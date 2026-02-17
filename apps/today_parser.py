@@ -57,6 +57,7 @@ class TelegramVacancyParser:
             self.api_hash
         )
         await self.client.start()
+        await self.db.init_db()
         print("✅ Telegram клиент подключен")
     
     async def parse_dialogs(self, hours_ago: int = 24):
@@ -236,7 +237,7 @@ class TelegramVacancyParser:
             # Сохраняем в базу данных как принятую с направлением и контактом
             direction = analysis.get('specialization', 'Не определено')
             contact_link = contact_data.get('contact_link')
-            self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
+            await self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
             
             self.results['relevant_vacancies'].append(vacancy_data)
             
@@ -254,7 +255,7 @@ class TelegramVacancyParser:
         
         # Сохраняем в базу данных как отклонённую
         if analysis.get('rejection_reason'):
-            self.db.add_rejected(
+            await self.db.add_rejected(
                 text,
                 channel_name,
                 analysis.get('rejection_reason'),
@@ -297,10 +298,10 @@ class TelegramVacancyParser:
         print(f"   📊 Всего просканировано сообщений: {self.results['total_messages_scanned']}")
         print(f"   ✅ Релевантных вакансий: {len(self.results['relevant_vacancies'])}")
 
-    def generate_markdown_report(self, filename: str):
+    async def generate_markdown_report(self, filename: str):
         """Генерирует подробный markdown-отчет с учётом статистики из БД."""
         # Получаем статистику из базы данных
-        db_stats = self.db.get_stats()
+        db_stats = await self.db.get_stats()
         filepath = settings.DAILY_REPORTS_DIR / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(f"# 📊 Отчет по вакансиям (подробный)\n\n")
