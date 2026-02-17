@@ -161,10 +161,10 @@ def cleanup_old_leads():
     
     try:
         from systems.parser.vacancy_db import VacancyDatabase
+        import asyncio
         
         db = VacancyDatabase()
-        # TODO: Реализовать метод удаления в VacancyDatabase
-        deleted_count = 0  
+        deleted_count = asyncio.run(db.delete_old_vacancies(30))
         
         logger.info(
             "cleanup_completed",
