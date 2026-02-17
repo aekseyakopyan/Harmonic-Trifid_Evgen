@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 
 # Добавляем корень проекта в пути импорта
-sys.path.append(str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config.settings import settings
 

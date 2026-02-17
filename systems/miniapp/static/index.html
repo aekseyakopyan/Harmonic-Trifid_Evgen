@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Harmonic Trifid</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--tg-theme-bg-color, #0f0f0f);
+            color: var(--tg-theme-text-color, #ffffff);
+        }
+        .container { max-width: 600px; margin: 0 auto; padding: 16px; }
+        .header { padding: 20px 0; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
+        .header h1 { font-size: 24px; margin-bottom: 8px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 24px; }
+        .stat-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.1); }
+        .stat-value { font-size: 32px; font-weight: bold; color: var(--tg-theme-button-color, #3390ec); }
+        .stat-label { font-size: 12px; color: var(--tg-theme-hint-color, #aaa); margin-top: 4px; }
+        .section-title { font-size: 18px; font-weight: 600; margin: 24px 0 12px 0; }
+        .lead-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; }
+        .lead-card:active { background: rgba(255,255,255,0.1); }
+        .lead-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .priority-badge { background: #ff4444; color: white; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+        .lead-text { font-size: 14px; line-height: 1.5; }
+        .loading { text-align: center; padding: 40px; color: var(--tg-theme-hint-color, #aaa); }
+        .button { width: 100%; background: var(--tg-theme-button-color, #3390ec); color: var(--tg-theme-button-text-color, #ffffff); border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Harmonic Trifid</h1>
+            <div class="subtitle">AI Lead Management + RL</div>
+        </div>
+        <div class="stats-grid" id="stats"><div class="loading">Загрузка...</div></div>
+        <div class="section-title">🔥 HOT-лиды</div>
+        <div id="leads-list"><div class="loading">Загрузка лидов...</div></div>
+    </div>
+    
+    <script>
+        const API_BASE = window.location.origin;
+        let tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/stats`);
+                const data = await response.json();
+                document.getElementById('stats').innerHTML = `
+                    <div class="stat-card"><div class="stat-value">${data.total_leads.toLocaleString()}</div><div class="stat-label">Всего лидов</div></div>
+                    <div class="stat-card"><div class="stat-value">${data.hot_leads}</div><div class="stat-label">HOT-лиды</div></div>
+                    <div class="stat-card"><div class="stat-value">${data.leads_24h}</div><div class="stat-label">За 24 часа</div></div>
+                    <div class="stat-card"><div class="stat-value">${data.reply_rate}%</div><div class="stat-label">Конверсия</div></div>
+                `;
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        async function loadLeads() {
+            try {
+                const response = await fetch(`${API_BASE}/api/leads/hot`);
+                const data = await response.json();
+                const leadsHtml = data.leads.map(lead => `
+                    <div class="lead-card" onclick="generateOutreach(${lead.id})">
+                        <div class="lead-header">
+                            <div class="lead-id">#${lead.id}</div>
+                            <div class="priority-badge">P${lead.priority}</div>
+                        </div>
+                        <div class="lead-text">${lead.text}</div>
+                    </div>
+                `).join('');
+                document.getElementById('leads-list').innerHTML = leadsHtml || '<div class="loading">Нет HOT-лидов</div>';
+            } catch (error) {
+                console.error('Error loading leads:', error);
+            }
+        }
+        
+        async function generateOutreach(leadId) {
+            try {
+                tg.showPopup({message: 'Генерирую отклик через RL...'});
+                const response = await fetch(`${API_BASE}/api/outreach/generate?lead_id=${leadId}`, {method: 'POST'});
+                const data = await response.json();
+                tg.showAlert(`✅ Отклик сгенерирован!\n\nСтратегия: ${data.strategy_id}\n\n${data.message}`);
+            } catch (error) {
+                tg.showAlert('Ошибка генерации');
+            }
+        }
+        
+        loadStats();
+        loadLeads();
+        setInterval(() => { loadStats(); loadLeads(); }, 30000);
+    </script>
+</body>
+</html>

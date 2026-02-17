@@ -9,6 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import pickle
 import asyncio
+import threading
 from typing import Tuple, Optional, List
 from datetime import datetime, timedelta
 
@@ -28,12 +29,15 @@ class DuplicateDetector:
     """
     
     _instance = None
+    _lock = threading.Lock()  # Thread-safe singleton
     
     def __new__(cls, db_manager=None):
-        """Singleton pattern"""
+        """Thread-safe singleton pattern"""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._lock:  # Acquire lock
+                if cls._instance is None:  # Double-check
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
     
     def __init__(self, db_manager=None):
@@ -66,8 +70,9 @@ class DuplicateDetector:
             self.encoder = None
             self.semantic_enabled = False
         
-        # Cache для embeddings (в памяти для быстрого доступа)
-        self.embeddings_cache = {}
+        # LRU Cache для embeddings (OrderedDict для эффективного LRU)
+        from collections import OrderedDict
+        self.embeddings_cache = OrderedDict()
         self.cache_max_size = 1000
         
         self._initialized = True
@@ -75,7 +80,7 @@ class DuplicateDetector:
     def encode_text(self, text: str) -> Optional[np.ndarray]:
         """
         Получить sentence embedding для текста.
-        Использует cache для ускорения.
+        Использует LRU cache для ускорения.
         
         Args:
             text: текст для кодирования
@@ -89,21 +94,22 @@ class DuplicateDetector:
         # Нормализация текста для cache key
         text_key = text.lower().strip()[:500]  # Первые 500 символов
         
-        # Проверка cache
+        # Проверка cache (LRU: move to end)
         if text_key in self.embeddings_cache:
+            # Перемещаем в конец (most recently used)
+            self.embeddings_cache.move_to_end(text_key)
             return self.embeddings_cache[text_key]
         
         try:
             # Кодирование
             embedding = self.encoder.encode(text)
             
-            # Сохранение в cache с ограничением размера
+            # LRU eviction если превышен лимит
             if len(self.embeddings_cache) >= self.cache_max_size:
-                # Удалить 10% старых записей (простая стратегия)
-                items_to_remove = list(self.embeddings_cache.keys())[:100]
-                for key in items_to_remove:
-                    del self.embeddings_cache[key]
+                # Удаляем самый старый (first item)
+                self.embeddings_cache.popitem(last=False)
             
+            # Добавляем новый embedding
             self.embeddings_cache[text_key] = embedding
             
             return embedding

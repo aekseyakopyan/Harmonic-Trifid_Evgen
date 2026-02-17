@@ -104,10 +104,6 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    # Admin
-    ADMIN_TELEGRAM_USERNAME: str = "_a1exeyy"
-    ADMIN_IDS: str = ""
-    
     # Supervisor Bot (для уведомлений об ошибках)
     SUPERVISOR_BOT_TOKEN: Optional[str] = None
     SUPERVISOR_CHAT_ID: str = "_a1exeyy"

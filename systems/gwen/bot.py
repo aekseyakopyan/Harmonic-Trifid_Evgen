@@ -2,7 +2,7 @@
 import asyncio
 from aiogram import Bot, Dispatcher
 from core.config.settings import settings
-from systems.gwen.handlers import review_commands
+from systems.gwen.handlers import review_commands, miniapp_commands
 from core.utils.structured_logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,8 +21,9 @@ async def start_bot():
     
     # Регистрация роутеров
     dp.include_router(review_commands.router)
+    dp.include_router(miniapp_commands.router)  # Mini App команды
     
-    logger.info("🤖 Gwen Aiogram Bot started (Review Mode)")
+    logger.info("🤖 Gwen Aiogram Bot started (Review Mode + Mini App)")
     
     try:
         await bot.delete_webhook(drop_pending_updates=True)
