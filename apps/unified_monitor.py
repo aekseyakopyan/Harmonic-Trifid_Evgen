@@ -18,7 +18,8 @@ def get_last_line(filepath):
             f.seek(-200, 2) if os.path.getsize(filepath) > 200 else None
             last_line = f.readlines()[-1].decode('utf-8', errors='ignore').strip()
             return last_line
-    except: return "Чтение..."
+    except Exception:
+        return "Чтение..."
 
 def parse_hist():
     if not os.path.exists(HIST_LOG): return 0, 0, 0
