@@ -1,0 +1,77 @@
+{
+    "mcpServers": {
+        "harmonic-trifid-knowledge": {
+            "command": "python3",
+            "args": [
+                "-m",
+                "mcp_servers.harmonic_trifid"
+            ],
+            "env": {
+                "PROJECT_ROOT": "/Users/set/.gemini/antigravity/playground/Evgeniy"
+            }
+        }
+    },
+    "contexts": {
+        "1": {
+            "name": "Core Architecture",
+            "path": "core/",
+            "includes": [
+                "ai_engine/",
+                "config/",
+                "utils/",
+                "database/"
+            ]
+        },
+        "2": {
+            "name": "Parser System",
+            "path": "systems/parser/",
+            "includes": [
+                "lead_filter_advanced.py",
+                "vacancy_db.py",
+                "tasks.py"
+            ]
+        },
+        "3": {
+            "name": "Alexey Personality",
+            "path": "systems/alexey/",
+            "includes": [
+                "personality.py",
+                "dialogue_manager.py",
+                "rate_limiter.py"
+            ]
+        },
+        "4": {
+            "name": "Gwen Commander",
+            "path": "systems/gwen/",
+            "includes": [
+                "commander.py",
+                "handlers/"
+            ]
+        },
+        "5": {
+            "name": "Dashboard",
+            "path": "systems/dashboard/",
+            "includes": [
+                "routes/",
+                "templates/",
+                "static/"
+            ]
+        },
+        "6": {
+            "name": "Applications",
+            "path": "apps/",
+            "includes": [
+                "today_parser.py",
+                "chat_joiner.py",
+                "unified_monitor.py"
+            ]
+        },
+        "7": {
+            "name": "Scripts & Utilities",
+            "path": "scripts/",
+            "includes": [
+                "*.py"
+            ]
+        }
+    }
+}
