@@ -82,12 +82,13 @@ class ActiveLearningPipeline:
             "predictions": predictions.tolist()
         }
     
-    def select_informative_samples(self, time_window_hours: int = 168) -> List[Dict]:
+    async def select_informative_samples(self, time_window_hours: int = 168) -> List[Dict]:
         """Отбор самых информативных неразмеченных лидов."""
         logger.info("selecting_informative_samples", hours=time_window_hours)
         
+        await self.db.init_db()
         cutoff_time = datetime.now() - timedelta(hours=time_window_hours)
-        unlabeled_leads = self.db.get_unlabeled_leads_since(cutoff_time)
+        unlabeled_leads = await self.db.get_unlabeled_leads_since(cutoff_time)
         
         # Фильтруем WARM (самые спорные)
         warm_leads = [lead for lead in unlabeled_leads if lead.tier == 'WARM']
@@ -124,7 +125,7 @@ class ActiveLearningPipeline:
         top_samples = scored_leads[:self.weekly_batch_size]
         
         for sample in top_samples:
-            self.db.update_lead_informativeness(
+            await self.db.update_lead_informativeness(
                 lead_id=sample["lead_id"],
                 informativeness=sample["informativeness"],
                 needs_review=True
@@ -132,12 +133,13 @@ class ActiveLearningPipeline:
             
         return top_samples
     
-    def trigger_retrain(self) -> Dict:
+    async def trigger_retrain(self) -> Dict:
         """Запуск переобучения при накоплении данных."""
-        new_labeled_count = self.db.get_new_labeled_count_since_last_train()
+        await self.db.init_db()
+        new_labeled_count = await self.db.get_new_labeled_count_since_last_train()
         
         if new_labeled_count >= 50:
-            return self.retrain_pipeline()
+            return await self.retrain_pipeline()
         
         return {
             "retrain_triggered": False,
@@ -145,28 +147,30 @@ class ActiveLearningPipeline:
             "reason": f"Need {50 - new_labeled_count} more labeled samples"
         }
     
-    def retrain_pipeline(self) -> Dict:
+    async def retrain_pipeline(self) -> Dict:
         """Пайплайн переобучения."""
         logger.info("retrain_pipeline_started")
         try:
-            train_data = self.db.get_labeled_data()
+            await self.db.init_db()
+            train_data = await self.db.get_labeled_data()
             if len(train_data) < 50:
-                return {"status": "failed", "reason": "insufficient_data"}
+                return {"status": "failed", "reason": "insufficient_data", "retrain_triggered": False}
             
             from systems.parser.train_bert import train_bert_classifier
             metrics = train_bert_classifier(
                 train_data=train_data,
                 output_dir="models/bert_retrained"
             )
-            return {"status": "success", "metrics": metrics, "model_version": datetime.now().isoformat()}
+            return {"status": "success", "metrics": metrics, "model_version": datetime.now().isoformat(), "retrain_triggered": True}
         except Exception as e:
             logger.error("retrain_failed", error=str(e))
-            return {"status": "failed", "error": str(e)}
+            return {"status": "failed", "error": str(e), "retrain_triggered": False}
 
-    def calculate_learning_curve_metrics(self) -> Dict:
+    async def calculate_learning_curve_metrics(self) -> Dict:
         """Метрики прогресса обучения."""
         # Упрощенная версия
-        new_labeled_count = self.db.get_new_labeled_count_since_last_train()
+        await self.db.init_db()
+        new_labeled_count = await self.db.get_new_labeled_count_since_last_train()
         return {
             "total_labeled": new_labeled_count,
             "weekly_labeled": new_labeled_count, # Упрощение
