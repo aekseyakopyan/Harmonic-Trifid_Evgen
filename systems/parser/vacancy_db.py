@@ -6,7 +6,7 @@ Vacancy Database - управление постоянной базой данн
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple, Any
 import pandas as pd
 from dataclasses import dataclass
 import os
