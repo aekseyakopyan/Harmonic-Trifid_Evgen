@@ -60,7 +60,15 @@ class VacancyDatabase:
                 draft_response TEXT,
                 rejection_reason TEXT,
                 first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL
+                last_seen TEXT NOT NULL,
+                informativeness_score REAL DEFAULT 0.0,
+                needs_review INTEGER DEFAULT 0,
+                manual_label INTEGER,
+                labeled_by TEXT,
+                labeled_at TEXT,
+                embedding BLOB,
+                is_deleted INTEGER DEFAULT 0,
+                deleted_at TEXT
             )
         """)
         
