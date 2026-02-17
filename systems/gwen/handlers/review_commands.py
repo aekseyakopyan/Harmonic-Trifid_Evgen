@@ -35,7 +35,7 @@ async def cmd_review_batch(message: Message):
     await message.answer("🔍 Загружаю самые информативные лиды для разметки...")
     
     # Получить batch от Active Learner
-    informative_samples = active_learner.select_informative_samples()
+    informative_samples = await active_learner.select_informative_samples()
     
     if not informative_samples:
         await message.answer(
@@ -129,7 +129,8 @@ async def handle_label(callback: CallbackQuery):
         # Сохранить разметку
         is_lead = (action == "true")
         
-        db.update_lead_label(
+        await db.init_db()
+        await db.update_lead_label(
             lead_id=lead_id,
             is_lead=is_lead,
             labeled_by=callback.from_user.username,
@@ -179,7 +180,7 @@ async def complete_review_session(message: Message):
     )
     
     # Проверить условия для retraining
-    retrain_result = active_learner.trigger_retrain()
+    retrain_result = await active_learner.trigger_retrain()
     
     if retrain_result["retrain_triggered"]:
         await message.answer(
@@ -202,7 +203,7 @@ async def complete_review_session(message: Message):
 @router.message(Command("review_stats"))
 async def cmd_review_stats(message: Message):
     """Статистика по Active Learning"""
-    metrics = active_learner.calculate_learning_curve_metrics()
+    metrics = await active_learner.calculate_learning_curve_metrics()
     
     text = (
         f"📊 Active Learning Статистика\n"
