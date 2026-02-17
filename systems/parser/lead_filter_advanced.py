@@ -709,6 +709,7 @@ class LeadFilterAdvanced:
         
     async def analyze(self, text: str, message_id: int = None, chat_id: int = None, source: str = "unknown") -> Dict[str, Any]:
         """Async analysis of a lead."""
+        await self.db.init_db()
         # Note: We assume direction is core for now or detected elsewhere
         direction = "SEO" # Default
         
