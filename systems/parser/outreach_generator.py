@@ -113,7 +113,8 @@ class OutreachGenerator:
                     if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
                     if (now - dt).total_seconds() > 43200: # 12 hours
                         is_old = True
-                except: pass
+                except Exception:
+                    pass
 
                 # Мы больше не генерируем черновики заранее для экономии ресурсов и упрощения процесса.
                 # Черновик будет сгенерирован только в момент клика на кнопку "Одобрить".
