@@ -151,7 +151,8 @@ class TelegramHistoryParser:
             with sqlite3.connect(self.raw_db_path) as conn:
                 conn.execute('INSERT OR IGNORE INTO raw_messages (chat_name, message_id, date, text, hash) VALUES (?,?,?,?,?)',
                              (chat_name, message.id, message.date.isoformat(), text, msg_hash))
-        except: pass
+        except Exception:
+            pass
 
         # 2. Анализ на лида
         if msg_hash in self.seen_messages: return
