@@ -160,8 +160,6 @@ class VacancyDatabase:
                 """, (date, vacancy_hash))
                 await db.commit()
                 return False
-        finally:
-            conn.close()
     
     def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None) -> bool:
         """
