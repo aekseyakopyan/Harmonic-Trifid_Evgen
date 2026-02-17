@@ -9,6 +9,12 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import pandas as pd
 from dataclasses import dataclass
+import os
+import sys
+
+# Add project root to sys.path to allow running as a script
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
 from core.config.settings import settings
 
 
