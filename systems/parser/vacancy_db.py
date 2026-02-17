@@ -305,7 +305,7 @@ class VacancyDatabase:
         for row in rows:
             try:
                 ts = datetime.fromisoformat(row[4]).timestamp()
-            except:
+            except Exception as e:  
                 ts = 0.0
             leads.append(Lead(
                 id=row[0], hash=row[1], text=row[2], source_channel=row[3],
@@ -332,7 +332,7 @@ class VacancyDatabase:
         for row in rows:
             try:
                 ts = datetime.fromisoformat(row[4]).timestamp()
-            except:
+            except Exception as e:  
                 ts = 0.0
                 
             leads.append(Lead(
@@ -372,7 +372,7 @@ class VacancyDatabase:
         for row in rows:
             try:
                 ts = datetime.fromisoformat(row[4]).timestamp()
-            except:
+            except Exception as e:  
                 ts = 0.0
             leads.append(Lead(
                 id=row[0], hash=row[1], text=row[2], source_channel=row[3],
@@ -399,7 +399,7 @@ class VacancyDatabase:
         for row in rows:
             try:
                 ts = datetime.fromisoformat(row[4]).timestamp()
-            except:
+            except Exception as e:  
                 ts = 0.0
             leads.append(Lead(
                 id=row[0], hash=row[1], text=row[2], source_channel=row[3],
@@ -440,7 +440,7 @@ class VacancyDatabase:
                     placeholders = ','.join(['?'] * len(batch))
                     async with db.execute(f"DELETE FROM vacancies WHERE id IN ({placeholders})", batch) as cursor:
                         success_count += cursor.rowcount
-                except:
+                except Exception as e:  
                     error_count += len(batch)
             await db.commit()
         return success_count, error_count
