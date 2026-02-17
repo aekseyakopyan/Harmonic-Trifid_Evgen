@@ -24,7 +24,7 @@ async def test_rate_limiter():
     can_send, wait_time = await limiter.can_send_pm(123)
     print(f"Can send to 123? {can_send}, wait time: {wait_time}")
     stats = limiter.get_stats()
-    print(f"Limiter stats: {stats['user_buckets_count']} user buckets")
+    print(f"Limiter stats: {stats['active_user_buckets']} user buckets")
     print("✅ Rate Limiter verification passed")
 
 async def test_vacancy_db():
