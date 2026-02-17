@@ -1,9 +1,4 @@
-"""
-Vacancy Database - управление постоянной базой данных вакансий.
-Хранит принятые и отклонённые вакансии, предотвращает дубликаты.
-"""
-
-import sqlite3
+import aiosqlite
 import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple, Any
@@ -36,67 +31,56 @@ class Lead:
 
 
 class VacancyDatabase:
-    """Управление базой данных вакансий с поддержкой дедупликации."""
+    """Управление базой данных вакансий с поддержкой дедупликации (асинхронно)."""
     
     def __init__(self, db_path: str = None):
         """
         Инициализация базы данных.
-        
-        Args:
-            db_path: путь к файлу базы данных SQLite
         """
         self.db_path = db_path or str(settings.VACANCY_DB_PATH)
-        self._init_database()
     
-    def _init_database(self):
-        """Создание таблицы, если её ещё нет."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS vacancies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                hash TEXT UNIQUE NOT NULL,
-                status TEXT NOT NULL,
-                text TEXT NOT NULL,
-                source TEXT NOT NULL,
-                direction TEXT,
-                contact_link TEXT,
-                response TEXT,
-                draft_response TEXT,
-                rejection_reason TEXT,
-                first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL,
-                informativeness_score REAL DEFAULT 0.0,
-                needs_review INTEGER DEFAULT 0,
-                manual_label INTEGER,
-                labeled_by TEXT,
-                labeled_at TEXT,
-                embedding BLOB,
-                is_deleted INTEGER DEFAULT 0,
-                deleted_at TEXT
-            )
-        """)
-        
-        # Индекс для быстрого поиска по hash
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_hash ON vacancies(hash)
-        """)
-        
-        conn.commit()
-        conn.close()
+    async def init_db(self):
+        """Создание таблицы, если её ещё нет (асинхронно)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS vacancies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hash TEXT UNIQUE NOT NULL,
+                    status TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    direction TEXT,
+                    contact_link TEXT,
+                    response TEXT,
+                    draft_response TEXT,
+                    rejection_reason TEXT,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    informativeness_score REAL DEFAULT 0.0,
+                    needs_review INTEGER DEFAULT 0,
+                    manual_label INTEGER,
+                    labeled_by TEXT,
+                    labeled_at TEXT,
+                    embedding BLOB,
+                    is_deleted INTEGER DEFAULT 0,
+                    deleted_at TEXT
+                )
+            """)
+            
+            # Индекс для быстрого поиска по hash
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_hash ON vacancies(hash)
+            """)
+            
+            await db.commit()
     
     def _generate_hash(self, text: str) -> str:
-        """
-        Генерирует уникальный hash для текста вакансии.
-        """
+        """Генерирует уникальный hash для текста вакансии."""
         clean_text = "".join(text.lower().split())
         return hashlib.md5(clean_text.encode()).hexdigest()
 
     def _get_similarity(self, text1: str, text2: str) -> float:
-        """
-        Вычисляет коэффициент схожести Жаккара для двух текстов на основе шинглов (триграмм).
-        """
+        """Вычисляет коэффициент схожести Жаккара."""
         def get_shingles(text: str, k: int = 3):
             clean = "".join(char for char in text.lower() if char.isalnum() or char.isspace())
             return set(clean[i:i+k] for i in range(len(clean) - k + 1))
@@ -112,24 +96,17 @@ class VacancyDatabase:
         
         return intersection / union
 
-    def find_similar(self, text: str, threshold: float = 0.7, days: int = 3) -> Optional[Dict]:
-        """
-        Ищет похожую вакансию в базе за последние N дней.
-        """
+    async def find_similar(self, text: str, threshold: float = 0.7, days: int = 3) -> Optional[Dict]:
+        """Ищет похожую вакансию в базе за последние N дней."""
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Берем только принятые вакансии за последнее время
-        cursor.execute("""
-            SELECT id, text, last_seen, source 
-            FROM vacancies 
-            WHERE status = 'accepted' AND last_seen > ?
-        """, (cutoff_date,))
-        
-        rows = cursor.fetchall()
-        conn.close()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT id, text, last_seen, source 
+                FROM vacancies 
+                WHERE status = 'accepted' AND last_seen > ?
+            """, (cutoff_date,)) as cursor:
+                rows = await cursor.fetchall()
         
         for row in rows:
             similarity = self._get_similarity(text, row[1])
@@ -144,66 +121,45 @@ class VacancyDatabase:
         
         return None
     
-    def is_processed(self, text: str, fuzzy: bool = True) -> bool:
-        """
-        Проверяет, была ли вакансия уже обработана ранее (точно или похоже).
-        """
-        # 1. Точная проверка по хешу
+    async def is_processed(self, text: str, fuzzy: bool = True) -> bool:
+        """Проверяет, была ли вакансия уже обработана ранее."""
         vacancy_hash = self._generate_hash(text)
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM vacancies WHERE hash = ?", (vacancy_hash,))
-        result = cursor.fetchone()
-        conn.close()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT id FROM vacancies WHERE hash = ?", (vacancy_hash,)) as cursor:
+                result = await cursor.fetchone()
         
         if result:
             return True
             
-        # 2. Нечеткая проверка (если включена)
         if fuzzy:
-            similar = self.find_similar(text)
+            similar = await self.find_similar(text)
             if similar:
                 return True
                 
         return False
     
-    def add_accepted(self, text: str, source: str, direction: str = None, 
-                     contact_link: str = None, date: Optional[str] = None) -> bool:
-        """
-        Добавляет принятую вакансию в базу.
-        
-        Args:
-            text: текст вакансии
-            source: источник (название канала)
-            direction: направление/специализация (SEO, Контекст, и т.д.)
-            contact_link: прямая ссылка на контакт (t.me/username)
-            date: дата обнаружения (ISO format), если None - текущая дата
-            
-        Returns:
-            True если успешно добавлено, False если уже существует
-        """
+    async def add_accepted(self, text: str, source: str, direction: str = None, 
+                           contact_link: str = None, date: Optional[str] = None) -> bool:
+        """Добавляет принятую вакансию в базу."""
         vacancy_hash = self._generate_hash(text)
         if date is None:
             date = datetime.now().isoformat()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("""
-                INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
-                VALUES (?, 'accepted', ?, ?, ?, ?, NULL, NULL, ?, ?)
-            """, (vacancy_hash, text, source, direction, contact_link, date, date))
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            # Вакансия уже существует, обновляем last_seen
-            cursor.execute("""
-                UPDATE vacancies SET last_seen = ? WHERE hash = ?
-            """, (date, vacancy_hash))
-            conn.commit()
-            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
+                    VALUES (?, 'accepted', ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """, (vacancy_hash, text, source, direction, contact_link, date, date))
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                await db.execute("""
+                    UPDATE vacancies SET last_seen = ? WHERE hash = ?
+                """, (date, vacancy_hash))
+                await db.commit()
+                return False
         finally:
             conn.close()
     
