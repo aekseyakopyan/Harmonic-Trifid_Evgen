@@ -482,3 +482,84 @@ class VacancyDatabase:
             ))
         conn.close()
         return leads
+
+    # ==========================================
+    # DELETION METHODS
+    # ==========================================
+
+    def delete_vacancy(self, vacancy_id: int) -> bool:
+        """Удаляет вакансию по ID."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM vacancies WHERE id = ?", (vacancy_id,))
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count > 0
+
+    def delete_old_vacancies(self, days: int = 30) -> int:
+        """Удаляет старые вакансии."""
+        return self.cleanup_old(days)
+
+    def bulk_delete_vacancies(self, vacancy_ids: List[int], batch_size: int = 100) -> Tuple[int, int]:
+        """Массовое удаление вакансий батчами."""
+        if not vacancy_ids:
+            return 0, 0
+        
+        success_count = 0
+        error_count = 0
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        for i in range(0, len(vacancy_ids), batch_size):
+            batch = vacancy_ids[i:i + batch_size]
+            try:
+                placeholders = ','.join(['?'] * len(batch))
+                cursor.execute(f"DELETE FROM vacancies WHERE id IN ({placeholders})", batch)
+                success_count += cursor.rowcount
+            except Exception as e:
+                error_count += len(batch)
+                
+        conn.commit()
+        conn.close()
+        return success_count, error_count
+
+    def delete_by_criteria(self, status: str = None, source: str = None, older_than_days: int = None) -> int:
+        """Удаление по критериям."""
+        query = "DELETE FROM vacancies WHERE 1=1"
+        params = []
+        
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        if older_than_days is not None:
+            cutoff = (datetime.now() - timedelta(days=older_than_days)).isoformat()
+            query += " AND last_seen < ?"
+            params.append(cutoff)
+            
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count
+
+    def soft_delete_vacancy(self, vacancy_id: int) -> bool:
+        """Мягкое удаление вакансии."""
+        now = datetime.now().isoformat()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE vacancies 
+            SET is_deleted = 1, deleted_at = ? 
+            WHERE id = ?
+        """, (now, vacancy_id))
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count > 0
