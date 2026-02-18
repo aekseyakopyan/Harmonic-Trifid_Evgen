@@ -307,25 +307,36 @@ class TelegramVacancyParser:
                 res = await session.execute(stmt)
                 lead = res.scalars().first()
                 
+                now = datetime.utcnow()
+                
                 if lead:
-                    # Проверяем, были ли исходящие сообщения
-                    from sqlalchemy import exists
-                    msg_stmt = select(MessageLog).where(
-                        and_(
-                            MessageLog.lead_id == lead.id,
-                            MessageLog.direction == 'outgoing'
-                        )
-                    )
-                    # Но проще проверить lead.last_interaction или просто факт наличия лида, 
-                    # если мы его создали только при отправке
-                    if lead.last_interaction:
+                    # Проверяем last_outreach_at (блокировка на 24 часа)
+                    if lead.last_outreach_at and (now - lead.last_outreach_at).total_seconds() < 86400:
+                        print(f"   ⏭ Лид {contact_link} уже получил сообщение недавно (last_outreach_at), пропускаем")
+                        return
+                    
+                    # Если лид есть и было живое общение (last_interaction)
+                    if lead.last_interaction and (now - lead.last_interaction).total_seconds() < 86400:
                         print(f"   ⏭ Лид {contact_link} уже есть в базе и с ним было общение, пропускаем")
                         return
+                    
+                    # ПРЕДВАРИТЕЛЬНОЕ РЕЗЕРВИРОВАНИЕ (Бронируем лида ПЕРЕД генерацией)
+                    lead.last_outreach_at = now
+                    await session.commit()
+                else:
+                    # Создаем нового лида и сразу бронируем его
+                    lead = Lead(
+                        username=clean_contact if not clean_contact.isdigit() else None,
+                        telegram_id=int(clean_contact) if clean_contact.isdigit() else None,
+                        full_name=contact_link,
+                        last_outreach_at=now
+                    )
+                    session.add(lead)
+                    await session.commit()
+                    
         except Exception as e:
-            print(f"   ⚠️ Ошибка при проверке истории лида {contact_link}: {e}")
-            # В случае ошибки БД продолжаем (лучше написать лишний раз, чем пропустить, 
-            # но тут на усмотрение. Выбираю пропустить если БД лежит для безопасности)
-            # return 
+            print(f"   ⚠️ Ошибка при проверке/бронировании лида {contact_link}: {e}")
+            return # Безопасность: если не смогли забронировать, не пишем
         
         try:
             from core.ai_engine.llm_client import llm_client

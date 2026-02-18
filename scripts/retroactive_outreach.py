@@ -55,7 +55,9 @@ async def get_targets():
             lead = res.scalars().first()
             
             # Если лида нет или с ним не было общения
-            if not lead or not lead.last_interaction:
+            # ТАКЖЕ проверяем last_outreach_at для дедупликации
+            now = datetime.utcnow()
+            if not lead or (not lead.last_interaction and (not lead.last_outreach_at or (now - lead.last_outreach_at).total_seconds() > 86400)):
                 targets.append({
                     'link': link,
                     'direction': direction,
@@ -102,22 +104,6 @@ async def run_outreach():
         print(f"[{i}/{len(to_process)}] 👉 Цель: {link} ({direction})")
         
         try:
-            # 1. Генерация отклика
-            prompt = prompt_builder.build_outreach_prompt(vacancy_text, direction)
-            system = prompt_builder.build_system_prompt("Ты — Алексей, пишешь первый отклик на вакансию.")
-            response_text = await llm_client.generate_response(prompt, system)
-            
-            if not response_text:
-                print(f"   ❌ Ошибка генерации для {link}")
-                continue
-                
-            # 2. Имитация набора текста
-            await humanity_manager.simulate_typing(client, link, response_text)
-            
-            # 3. Отправка
-            sent_msg = await client.send_message(link, response_text)
-            print(f"   ✅ Отправлено!")
-
             # 4. Сохранение в БД
             async with async_session() as session:
                 clean_contact = link.replace('@', '')
@@ -131,16 +117,43 @@ async def run_outreach():
                 res = await session.execute(stmt)
                 lead = res.scalars().first()
                 
+                now = datetime.utcnow()
                 if not lead:
                     lead = Lead(
                         username=clean_contact if '@' in link or not link.startswith('tg://') else None,
                         telegram_id=int(clean_contact) if clean_contact.isdigit() else None,
-                        full_name=link
+                        full_name=link,
+                        last_outreach_at=now # Резервируем
                     )
                     session.add(lead)
                     await session.commit()
                     await session.refresh(lead)
+                else:
+                    # Если лид уже есть, проверяем не занят ли он кем-то другим за последние 5 минут
+                    if lead.last_outreach_at and (now - lead.last_outreach_at).total_seconds() < 300:
+                        # Если кто-то другой (парсер) забронировал его только что — пропускаем
+                        print(f"   ⏭ Перехват! Лид {link} уже забронирован другим процессом.")
+                        continue
+                    
+                    lead.last_outreach_at = now # Резервируем
+                    await session.commit()
                 
+                # 1. Генерация отклика (теперь ПОСЛЕ резервирования)
+                prompt = prompt_builder.build_outreach_prompt(vacancy_text, direction)
+                system = prompt_builder.build_system_prompt("Ты — Алексей, пишешь первый отклик на вакансию.")
+                response_text = await llm_client.generate_response(prompt, system)
+                
+                if not response_text:
+                    print(f"   ❌ Ошибка генерации для {link}")
+                    continue
+                    
+                # 2. Имитация набора текста
+                await humanity_manager.simulate_typing(client, link, response_text)
+                
+                # 3. Отправка
+                sent_msg = await client.send_message(link, response_text)
+                print(f"   ✅ Отправлено!")
+
                 # Лог сообщения
                 msg_log = MessageLog(
                     lead_id=lead.id,
@@ -149,7 +162,7 @@ async def run_outreach():
                     status="sent",
                     telegram_msg_id=sent_msg.id
                 )
-                lead.last_interaction = datetime.utcnow()
+                lead.last_interaction = now
                 session.add(msg_log)
                 await session.commit()
 

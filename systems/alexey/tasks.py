@@ -111,15 +111,38 @@ async def run_automated_outreach(client: TelegramClient):
                             l_result = await session.execute(lead_stmt)
                             existing_lead = l_result.scalars().first()
                             
+                            now = datetime.utcnow()
+                            
                             if existing_lead:
                                 # ПРОВЕРКА: Если диалогом уже управляет человек - пропускаем
                                 if getattr(existing_lead, 'is_human_managed', False):
                                     logger.info(f"Lead {recipient} is human managed. Skipping.")
                                     continue
-
-                                # Если мы уже общались с ним последние 24 часа — пропускаем
-                                if existing_lead.last_interaction > datetime.utcnow() - timedelta(days=1):
+                                
+                                # ПРОВЕРКА: Если мы уже делали outreach в последние 24 часа — пропускаем
+                                if existing_lead.last_outreach_at and (now - existing_lead.last_outreach_at).total_seconds() < 86400:
+                                    logger.info(f"Lead {recipient} already contacted recently. Skipping.")
                                     continue
+
+                                # Если мы уже общались с ним последние 24 часа (живое общение) — пропускаем
+                                if existing_lead.last_interaction and (now - existing_lead.last_interaction).total_seconds() < 86400:
+                                    logger.info(f"Lead {recipient} has recent interaction. Skipping.")
+                                    continue
+                                    
+                                # РЕЗЕРВИРОВАНИЕ: бронируем лида прямо сейчас
+                                existing_lead.last_outreach_at = now
+                                await session.commit()
+                            else:
+                                # Создаем нового лида и сразу бронируем
+                                existing_lead = Lead(
+                                    username=clean_recipient if isinstance(recipient, str) and not clean_recipient.isdigit() else None,
+                                    telegram_id=int(clean_recipient) if str(clean_recipient).isdigit() else None,
+                                    full_name=str(recipient),
+                                    last_outreach_at=now
+                                )
+                                session.add(existing_lead)
+                                await session.commit()
+                                await session.refresh(existing_lead)
                         
                         logger.info(f"Targeting recipient: {recipient}")
                         

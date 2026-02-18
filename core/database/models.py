@@ -49,6 +49,7 @@ class Lead(Base, TimestampMixin):
     # Follow-up Tracking
     follow_up_level: Mapped[int] = mapped_column(Integer, default=0) # 0: none, 1: 1 day, 2: 3 days, 3: 5 days
     follow_up_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_outreach_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     
     messages: Mapped[List["MessageLog"]] = relationship(back_populates="lead")
     
