@@ -19,7 +19,7 @@ from core.cases import CaseMatcher
 
 # Настройки для автоматизации
 AUTOMATED_OUTREACH_INTERVAL = 3600 # 1 hour
-DRY_RUN = True # По умолчанию True для безопасности
+DRY_RUN = False # Реальная отправка включена
 
 async def run_automated_outreach(client: TelegramClient):
     """
@@ -259,9 +259,11 @@ async def run_follow_ups(client: TelegramClient):
                             status = "sent"
                             error_msg = None
                             
-                            await humanity_manager.simulate_typing(client, lead.telegram_id, follow_up_text)
+                            # Отправляем по username если есть, иначе по telegram_id
+                            recipient = f"@{lead.username}" if lead.username else lead.telegram_id
+                            await humanity_manager.simulate_typing(client, recipient, follow_up_text)
                             try:
-                                sent_msg = await interceptor.send_message(lead.telegram_id, follow_up_text)
+                                sent_msg = await interceptor.send_message(recipient, follow_up_text)
                             except Exception as e:
                                 logger.error(f"Failed to send follow-up: {e}")
                                 status = "failed"

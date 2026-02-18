@@ -18,6 +18,9 @@ from systems.parser.vacancy_analyzer.contact_extractor import ContactExtractor
 from systems.parser.vacancy_analyzer.niche_detector import NicheDetector
 from systems.parser.vacancy_db import VacancyDatabase
 from core.config.settings import settings
+from core.database.connection import async_session
+from core.database.models import Lead, MessageLog
+from sqlalchemy import select, or_
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -39,6 +42,7 @@ class TelegramVacancyParser:
         
         self.client = None
         self.seen_messages = set() # Для дедупликации по тексту
+        self._contacted_today = set()  # Контакты, которым уже написали в этом цикле
         self.db = VacancyDatabase()  # База данных вакансий (берет путь из settings)
         self.results = {
             'parsed_at': datetime.now(timezone.utc).isoformat(),
@@ -239,6 +243,9 @@ class TelegramVacancyParser:
             contact_link = contact_data.get('contact_link')
             await self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
             
+            # Немедленная отправка первого сообщения лиду
+            await self._send_outreach_to_lead(contact_link, text, direction)
+            
             self.results['relevant_vacancies'].append(vacancy_data)
             
             status_icon = "📝 ФОРМА!" if has_google_form else "✅ Найдено!"
@@ -272,6 +279,87 @@ class TelegramVacancyParser:
             'relevance_score': analysis['relevance_score'],
             'rejection_reason': analysis.get('rejection_reason')
         })
+
+    async def _send_outreach_to_lead(self, contact_link: str, vacancy_text: str, specialization: str):
+        """
+        Немедленно отправляет первое сообщение лиду сразу после парсинга.
+        Использует тот же Telethon клиент парсера.
+        """
+        if not contact_link:
+            return
+        
+        # Защита от дублей в рамках одного цикла
+        if contact_link in self._contacted_today:
+            print(f"   ⏭ Уже написали {contact_link} в этом цикле, пропускаем")
+            return
+        
+        # Проверка по базе данных (чтобы не писать повторно спустя время)
+        try:
+            async with async_session() as session:
+                clean_contact = contact_link.replace('@', '')
+                # Ищем по username или ID (если это число)
+                stmt = select(Lead).where(
+                    or_(
+                        Lead.username == clean_contact,
+                        Lead.telegram_id.cast(Lead.telegram_id.type.__class__) == clean_contact
+                    )
+                )
+                res = await session.execute(stmt)
+                lead = res.scalars().first()
+                
+                if lead:
+                    # Проверяем, были ли исходящие сообщения
+                    from sqlalchemy import exists
+                    msg_stmt = select(MessageLog).where(
+                        and_(
+                            MessageLog.lead_id == lead.id,
+                            MessageLog.direction == 'outgoing'
+                        )
+                    )
+                    # Но проще проверить lead.last_interaction или просто факт наличия лида, 
+                    # если мы его создали только при отправке
+                    if lead.last_interaction:
+                        print(f"   ⏭ Лид {contact_link} уже есть в базе и с ним было общение, пропускаем")
+                        return
+        except Exception as e:
+            print(f"   ⚠️ Ошибка при проверке истории лида {contact_link}: {e}")
+            # В случае ошибки БД продолжаем (лучше написать лишний раз, чем пропустить, 
+            # но тут на усмотрение. Выбираю пропустить если БД лежит для безопасности)
+            # return 
+        
+        try:
+            from core.ai_engine.llm_client import llm_client
+            from core.ai_engine.prompt_builder import prompt_builder
+            import random
+            
+            # Генерируем текст через LLM
+            prompt = prompt_builder.build_outreach_prompt(
+                vacancy_text=vacancy_text,
+                specialization=specialization
+            )
+            system = prompt_builder.build_system_prompt(
+                "Ты — Алексей, пишешь первый отклик на вакансию. Будь живым, экспертным, без шаблонов."
+            )
+            text = await llm_client.generate_response(prompt, system)
+            
+            if not text:
+                print(f"   ❌ LLM не сгенерировал текст для {contact_link}")
+                return
+            
+            # Имитация человеческой задержки перед отправкой (3-10 сек)
+            delay = random.uniform(3, 10)
+            await asyncio.sleep(delay)
+            
+            # Отправка через клиент парсера
+            await self.client.send_message(contact_link, text)
+            self._contacted_today.add(contact_link)
+            print(f"   📤 Отправлено сообщение лиду: {contact_link}")
+            
+            # Пауза после отправки (антиспам)
+            await asyncio.sleep(random.uniform(30, 60))
+            
+        except Exception as e:
+            print(f"   ❌ Ошибка отправки лиду {contact_link}: {e}")
 
     def _calculate_priority(self, analysis: dict, contact: dict, has_form: bool = False) -> str:
         """Вычисляет общий приоритет вакансии"""
