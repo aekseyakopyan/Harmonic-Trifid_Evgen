@@ -1,161 +1,174 @@
 """
-smart_sender.py — Умная отправка сообщений через Telethon.
+smart_sender.py — Умная отправка сообщений через Pyrogram.
 
-Поддерживает отправку по:
-1. username   → клиент сначала резолвит, затем шлёт
-2. user_id(int) → берёт из кэша сессии (если бот был в одном чате с лидом)
-3. InputPeerUser(id, 0) → попытка отправить по ID с хэшом=0 (работает в некоторых версиях)
-4. Поиск через общие чаты → get_participants парсинговых чатов для получения access_hash
-5. ImportContacts (если есть номер телефона) → добавляем как контакт, потом шлём
-
-Статья-источник: https://habr.com/ru/companies/amvera/articles/838204/
+С Pyrogram всё стало намного проще:
+- app.send_message(chat_id: int, text) работает НАПРЯМУЮ по integer ID
+- не нужен access_hash, нет get_entity(), нет InputPeerUser хаков
+- ImportContacts используется только если нужно найти пользователя по номеру телефона
 """
 
 import asyncio
 from typing import Optional, Union
-from telethon import TelegramClient
-from telethon.tl.types import User, InputPeerUser
-from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContactsRequest
-from telethon.tl.types import InputPhoneContact
+from pyrogram import Client
+from pyrogram.types import User
+from pyrogram.enums import ChatAction
+from pyrogram.errors import (
+    UserIsBlocked, InputUserDeactivated, PeerFlood,
+    UserPrivacyRestricted, FloodWait, BadRequest
+)
 from core.utils.logger import logger
 
 
 async def smart_send_message(
-    client: TelegramClient,
+    client: Client,
     recipient: Union[str, int],
     text: str,
     simulate_typing: bool = True,
     typing_duration: float = 2.0,
     phone: Optional[str] = None,
-    monitored_chats_ids: Optional[list] = None
+    monitored_chats_ids: Optional[list] = None  # Оставляем для совместимости API
 ) -> bool:
     """
-    Умная отправка сообщения лиду с множеством стратегий fallback.
+    Умная отправка сообщения лиду.
+
+    Pyrogram поддерживает отправку по integer user_id напрямую — это главное преимущество
+    над Telethon. Метод пробует несколько вариантов и возвращает True при успехе.
 
     Args:
-        client: Telethon клиент (userbot)
+        client: Pyrogram Client (userbot)
         recipient: username (str, без @) или telegram_id (int)
         text: Текст сообщения
         simulate_typing: Симулировать ли набор текста
-        typing_duration: Пауза при имитации набора
-        phone: Опциональный номер телефона в формате +7XXXXXXXXXX
-        monitored_chats_ids: Список ID чатов, в которых бот состоит (для поиска entity через участников)
+        typing_duration: Время имитации набора, секунды
+        phone: Опциональный номер телефона (+7XXXXXXXXXX) — для поиска через ImportContacts
+        monitored_chats_ids: Не используется в Pyrogram (оставлен для совместимости)
 
     Returns:
         True если сообщение отправлено, False — если все попытки провалились
     """
-    entity = await _resolve_entity(client, recipient, phone, monitored_chats_ids)
-    
-    if entity is None:
-        logger.warning(f"[SmartSender] ❌ Не удалось разрешить entity для: {recipient}")
+    # Проверяем что получатель — реальный пользователь (не канал/группа)
+    if not await _is_valid_user(client, recipient):
         return False
-    
-    # Проверяем, что это реальный пользователь (не бот/канал/группа)
-    if isinstance(entity, User):
-        if entity.bot:
-            logger.info(f"[SmartSender] ⏭ Пропуск бота: {recipient}")
-            return False
-    
+
     try:
         if simulate_typing:
-            async with client.action(entity, 'typing'):
-                await asyncio.sleep(typing_duration)
-                await client.send_message(entity, text)
-        else:
-            await client.send_message(entity, text)
-        
+            try:
+                await client.send_chat_action(recipient, ChatAction.TYPING)
+                await asyncio.sleep(min(typing_duration, 5.0))
+            except Exception:
+                pass  # Typing simulation failure is not critical
+
+        await client.send_message(recipient, text)
         logger.info(f"[SmartSender] ✅ Сообщение отправлено: {recipient}")
         return True
-        
+
+    except UserIsBlocked:
+        logger.info(f"[SmartSender] ⛔ Пользователь {recipient} заблокировал нас")
+        return False
+
+    except InputUserDeactivated:
+        logger.info(f"[SmartSender] 👻 Аккаунт {recipient} деактивирован")
+        return False
+
+    except UserPrivacyRestricted:
+        logger.info(f"[SmartSender] 🔒 {recipient} ограничил входящие сообщения (privacy settings)")
+        # Пробуем через ImportContacts если есть номер телефона
+        if phone:
+            return await _try_send_via_import_contact(client, phone, text, simulate_typing, typing_duration)
+        return False
+
+    except PeerFlood:
+        logger.warning(f"[SmartSender] 🚨 PeerFlood — слишком много запросов, пауза 60 сек")
+        await asyncio.sleep(60)
+        return False
+
+    except FloodWait as e:
+        logger.warning(f"[SmartSender] ⏳ FloodWait {e.value} секунд для {recipient}")
+        await asyncio.sleep(e.value + 5)
+        # Повторная попытка после ожидания
+        try:
+            await client.send_message(recipient, text)
+            return True
+        except Exception:
+            return False
+
+    except BadRequest as e:
+        logger.warning(f"[SmartSender] ❌ BadRequest для {recipient}: {e}")
+        return False
+
     except Exception as e:
         logger.error(f"[SmartSender] ❌ Ошибка отправки {recipient}: {e}")
         return False
 
 
-async def _resolve_entity(
-    client: TelegramClient,
-    recipient: Union[str, int],
-    phone: Optional[str] = None,
-    monitored_chats_ids: Optional[list] = None
-) -> Optional[User]:
+async def _is_valid_user(client: Client, recipient: Union[str, int]) -> bool:
     """
-    Пытается получить объект User через несколько стратегий.
+    Проверяет что получатель — живой пользователь (не бот, не канал/группа).
+    Pyrogram позволяет получить информацию по integer ID напрямую.
     """
-    
-    # ──────────────────────────────────────────────
-    # Стратегия 1: Прямое разрешение (username или ID из кэша сессии)
-    # ──────────────────────────────────────────────
     try:
-        lookup = recipient if isinstance(recipient, int) else recipient.lstrip('@')
-        entity = await client.get_entity(lookup)
-        logger.info(f"[SmartSender] ✅ Стратегия 1 (get_entity) успешна для: {recipient}")
-        return entity
+        user = await client.get_users(recipient)
+        if isinstance(user, User):
+            if user.is_bot:
+                logger.info(f"[SmartSender] ⏭ Пропуск бота: {recipient}")
+                return False
+            return True
+        return False
     except Exception as e:
-        logger.debug(f"[SmartSender] Стратегия 1 не сработала для {recipient}: {e}")
+        # Если вообще не можем получить инфо — пробуем отправить всё равно
+        logger.debug(f"[SmartSender] Не удалось проверить тип {recipient}: {e}, пробуем отправить")
+        return True  # Оптимистично пробуем
 
-    # ──────────────────────────────────────────────
-    # Стратегия 2: InputPeerUser с access_hash=0
-    # Работает если у Telegram API есть запись о пользователе в вашей сессии
-    # ──────────────────────────────────────────────
-    if isinstance(recipient, int):
-        try:
-            peer = InputPeerUser(user_id=recipient, access_hash=0)
-            entity = await client.get_entity(peer)
-            logger.info(f"[SmartSender] ✅ Стратегия 2 (InputPeerUser hash=0) успешна для ID: {recipient}")
-            return entity
-        except Exception as e:
-            logger.debug(f"[SmartSender] Стратегия 2 не сработала для {recipient}: {e}")
 
-    # ──────────────────────────────────────────────
-    # Стратегия 3: Поиск через участников мониторируемых чатов
-    # Если бот состоит в одном чате с лидом — получаем access_hash через get_participants
-    # ──────────────────────────────────────────────
-    if isinstance(recipient, int) and monitored_chats_ids:
-        for chat_id in monitored_chats_ids[:10]:  # Ограничиваем перебор 10 чатами
+async def _try_send_via_import_contact(
+    client: Client,
+    phone: str,
+    text: str,
+    simulate_typing: bool,
+    typing_duration: float
+) -> bool:
+    """
+    Добавляет пользователя по номеру телефона через ImportContacts,
+    отправляет сообщение, затем удаляет из контактов.
+    """
+    try:
+        from pyrogram.raw.functions.contacts import ImportContacts, DeleteContacts
+        from pyrogram.raw.types import InputPhoneContact
+
+        contacts = [InputPhoneContact(
+            client_id=0,
+            phone=phone,
+            first_name="Lead",
+            last_name=""
+        )]
+        result = await client.invoke(ImportContacts(contacts=contacts))
+
+        if not result.users:
+            logger.warning(f"[SmartSender] ImportContacts не нашёл пользователя с номером {phone}")
+            return False
+
+        user = result.users[0]
+        user_id = user.id
+
+        if simulate_typing:
             try:
-                participants = await client.get_participants(chat_id, limit=200)
-                for p in participants:
-                    if p.id == recipient:
-                        logger.info(f"[SmartSender] ✅ Стратегия 3 (из участников чата {chat_id}) успешна для: {recipient}")
-                        return p
+                await client.send_chat_action(user_id, ChatAction.TYPING)
+                await asyncio.sleep(min(typing_duration, 5.0))
             except Exception:
-                continue
-    
-    # ──────────────────────────────────────────────
-    # Стратегия 4: ImportContacts по номеру телефона
-    # Добавляем временный контакт, получаем entity, затем удаляем контакт
-    # ──────────────────────────────────────────────
-    if phone:
+                pass
+
+        await client.send_message(user_id, text)
+        logger.info(f"[SmartSender] ✅ Отправлено через ImportContacts: {phone} (ID: {user_id})")
+
+        # Удаляем из контактов
         try:
-            contacts = [InputPhoneContact(
-                client_id=0,
-                phone=phone,
-                first_name="Lead",
-                last_name=""
-            )]
-            result = await client(ImportContactsRequest(contacts))
-            
-            if result.users:
-                user = result.users[0]
-                logger.info(f"[SmartSender] ✅ Стратегия 4 (ImportContacts) успешна для: {phone}")
-                
-                # Удаляем контакт после получения entity (чтобы не засорять список)
-                try:
-                    await client(DeleteContactsRequest(id=[user]))
-                except Exception:
-                    pass  # Не критично, если не удалось удалить
-                
-                return user
-        except Exception as e:
-            logger.debug(f"[SmartSender] Стратегия 4 не сработала для {phone}: {e}")
-    
-    return None
+            from pyrogram.raw.types import InputUser
+            await client.invoke(DeleteContacts(id=[InputUser(user_id=user.id, access_hash=user.access_hash)]))
+        except Exception:
+            pass
 
+        return True
 
-async def is_human_user(client: TelegramClient, entity) -> bool:
-    """Проверяет, что entity является живым пользователем (не бот, не канал)."""
-    if not isinstance(entity, User):
+    except Exception as e:
+        logger.error(f"[SmartSender] ImportContacts ошибка для {phone}: {e}")
         return False
-    if entity.bot:
-        return False
-    return True

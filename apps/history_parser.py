@@ -8,8 +8,8 @@ import os
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta, timezone
-from telethon import TelegramClient
-from telethon.tl.types import MessageEntityTextUrl
+from pyrogram import Client
+from pyrogram.types import MessageEntityTextUrl
 from dotenv import load_dotenv
 
 import sys
@@ -29,10 +29,38 @@ class TelegramHistoryParser:
     def __init__(self):
         self.api_id = settings.TELEGRAM_API_ID
         self.api_hash = settings.TELEGRAM_API_HASH
-        from telethon.sessions import StringSession
-        with open("data/sessions/session_string_final.txt", "r") as f:
-            session_str = f.read().strip()
-        self.session = StringSession(session_str)
+        
+        # Загружаем Pyrogram сессию
+        session_str = None
+        for path in ["data/sessions/alexey_pyrogram.txt", "data/sessions/session_string_pyrogram.txt"]:
+            try:
+                with open(path, "r") as f:
+                    content = f.read().strip()
+                    if content:
+                        session_str = content
+                        break
+            except FileNotFoundError:
+                continue
+        
+        if session_str:
+            self.client = Client(
+                name="history_parser",
+                api_id=self.api_id,
+                api_hash=self.api_hash,
+                session_string=session_str,
+                in_memory=True,
+                no_updates=True
+            )
+        else:
+            import os
+            os.makedirs("data/sessions", exist_ok=True)
+            self.client = Client(
+                name="data/sessions/history_parser",
+                api_id=self.api_id,
+                api_hash=self.api_hash,
+                phone_number=getattr(settings, 'TELEGRAM_PHONE', None),
+                no_updates=True
+            )
         
         # Новый фильтр Гвен
         from systems.parser.lead_filter_advanced import LeadFilterAdvanced
@@ -45,8 +73,7 @@ class TelegramHistoryParser:
         # Основная база данных
         self.db = VacancyDatabase()
 
-        self.client = None
-        self.seen_messages = set() # Дедупликация в рамках сессии
+        self.seen_messages = set()
         
         self.stats = {
             'total_messages': 0,
@@ -87,18 +114,20 @@ class TelegramHistoryParser:
             ''')
 
     async def initialize(self):
-        self.client = TelegramClient(self.session, self.api_id, self.api_hash)
         await self.client.start()
         await self.db.init_db()
-        print("✅ Машина времени подключена (UNIFIED_DB)")
+        print("✅ Машина времени подключена (Pyrogram, UNIFIED_DB)")
     
     async def parse_history(self):
         await self.initialize()
         
         print(f"\n🚀 Запуск сканирования за 2 года: {self.start_date.date()} -> {self.stop_date.date()}")
         
-        dialogs = await self.client.get_dialogs(limit=None)
-        target_dialogs = [d for d in dialogs if d.is_group or d.is_channel or (d.is_user and hasattr(d.entity, 'bot') and d.entity.bot)]
+        target_dialogs = []
+        async for d in self.client.get_dialogs():
+            from pyrogram.enums import ChatType
+            if d.chat.type in (ChatType.SUPERGROUP, ChatType.GROUP, ChatType.CHANNEL, ChatType.BOT):
+                target_dialogs.append(d)
         
         print(f"🎯 Найдено диалогов: {len(target_dialogs)}\n")
         
@@ -111,7 +140,7 @@ class TelegramHistoryParser:
                 msg_count = 0
                 
                 try:
-                    async for message in self.client.iter_messages(dialog, limit=None, offset_date=self.start_date):
+                    async for message in self.client.get_chat_history(d.chat.id, limit=None):
                         if not message.text: continue
                         if message.date < self.stop_date: break
                         
@@ -131,20 +160,6 @@ class TelegramHistoryParser:
                         
                 except Exception as e:
                     print(f"[{index}] ❌ Ошибка в {chat_name}: {e}")
-                
-                await asyncio.sleep(0.5)
-
-        tasks = [process_chat(d, i+1) for i, d in enumerate(target_dialogs)]
-        await asyncio.gather(*tasks)
-        
-        await self.client.disconnect()
-        print(f"\n🏁 Финиш! Просканировано: {self.stats['total_messages']}, Найдено лидов: {self.stats['total_leads']}")
-
-    def _get_hash(self, text):
-        import hashlib
-        clean_text = "".join(text.lower().split())
-        return hashlib.md5(clean_text.encode()).hexdigest()
-
     async def _process_message(self, message, chat_name):
         text = message.text
         if not text: return

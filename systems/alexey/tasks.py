@@ -8,7 +8,8 @@ from core.database.models import Lead, MessageLog
 from core.ai_engine.llm_client import llm_client
 from core.ai_engine.prompt_builder import prompt_builder
 from core.utils.logger import logger
-from telethon import TelegramClient
+from telethon import TelegramClient  # noqa: F401 — remove after full migration
+from pyrogram import Client
 from systems.gwen import create_interceptor
 from core.config.settings import settings
 from core.utils.humanity import humanity_manager
@@ -21,7 +22,7 @@ from core.cases import CaseMatcher
 AUTOMATED_OUTREACH_INTERVAL = 3600 # 1 hour
 DRY_RUN = False # Реальная отправка включена
 
-async def run_automated_outreach(client: TelegramClient):
+async def run_automated_outreach(client: Client):
     """
     Фоновая задача для автоматического поиска вакансий и отправки откликов.
     """
@@ -297,19 +298,23 @@ async def run_follow_ups(client: TelegramClient):
                             status = "sent"
                             error_msg = None
                             
-                            # Отправляем по username если есть, иначе по telegram_id
+                            # ПРОВЕРКА: только физлица — выполняется внутри smart_send_message
                             recipient = lead.username or lead.telegram_id
                             
-                            # ПРОВЕРКА: только физлица
-                            from telethon.tl.types import User
                             try:
-                                entity = await client.get_entity(recipient)
-                                if not isinstance(entity, User) or entity.bot:
-                                    logger.info(f"Skipping follow-up for {recipient} - not a human user")
-                                    continue
-                                
-                                await humanity_manager.simulate_typing(client, entity, follow_up_text)
-                                sent_msg = await interceptor.send_message(entity, follow_up_text)
+                                # Use smart_send_message for follow-ups as well
+                                sent = await smart_send_message(
+                                    client=client,
+                                    recipient=recipient,
+                                    text=follow_up_text,
+                                    simulate_typing=True,
+                                    typing_duration=humanity_manager.get_typing_duration(follow_up_text)
+                                )
+                                if sent:
+                                    sent_msg = sent # smart_send_message returns the sent message object if successful
+                                else:
+                                    status = "failed"
+                                    error_msg = "smart_send_message failed"
                             except Exception as e:
                                 err_str = str(e).lower()
                                 if 'blocked' in err_str or "can't write" in err_str or "forbidden" in err_str:

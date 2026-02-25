@@ -6,8 +6,8 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from telethon import TelegramClient
-from telethon.tl.types import MessageEntityTextUrl
+from pyrogram import Client
+from pyrogram.types import MessageEntityTextUrl
 from dotenv import load_dotenv
 
 import sys
@@ -31,19 +31,48 @@ class TelegramVacancyParser:
     def __init__(self):
         self.api_id = settings.TELEGRAM_API_ID
         self.api_hash = settings.TELEGRAM_API_HASH
-        from telethon.sessions import StringSession
-        with open("data/sessions/session_string_final.txt", "r") as f:
-            session_str = f.read().strip()
-        self.session = StringSession(session_str)
+        self.api_id = settings.TELEGRAM_API_ID
+        self.api_hash = settings.TELEGRAM_API_HASH
+        
+        # Загружаем Pyrogram сессию
+        session_str = None
+        for path in ["data/sessions/alexey_pyrogram.txt", "data/sessions/session_string_pyrogram.txt"]:
+            try:
+                with open(path, "r") as f:
+                    content = f.read().strip()
+                    if content:
+                        session_str = content
+                        break
+            except FileNotFoundError:
+                continue
+        
+        if session_str:
+            self.client = Client(
+                name="parser",
+                api_id=self.api_id,
+                api_hash=self.api_hash,
+                session_string=session_str,
+                in_memory=True,
+                no_updates=True  # Парсер не обрабатывает входящие события
+            )
+        else:
+            import os
+            os.makedirs("data/sessions", exist_ok=True)
+            self.client = Client(
+                name="data/sessions/parser",
+                api_id=self.api_id,
+                api_hash=self.api_hash,
+                phone_number=getattr(settings, 'TELEGRAM_PHONE', None),
+                no_updates=True
+            )
         
         self.scorer = VacancyScorer()
         self.contact_extractor = ContactExtractor()
         self.niche_detector = NicheDetector()
         
-        self.client = None
-        self.seen_messages = set() # Для дедупликации по тексту
-        self._contacted_today = set()  # Контакты, которым уже написали в этом цикле
-        self.db = VacancyDatabase()  # База данных вакансий (берет путь из settings)
+        self.seen_messages = set()
+        self._contacted_today = set()
+        self.db = VacancyDatabase()
         self.results = {
             'parsed_at': datetime.now(timezone.utc).isoformat(),
             'total_messages_scanned': 0,
@@ -54,15 +83,10 @@ class TelegramVacancyParser:
         }
     
     async def initialize(self):
-        """Инициализация Telegram клиента"""
-        self.client = TelegramClient(
-            self.session,
-            self.api_id,
-            self.api_hash
-        )
+        """Инициализация Telegram клиента (Pyrogram)"""
         await self.client.start()
         await self.db.init_db()
-        print("✅ Telegram клиент подключен")
+        print("✅ Pyrogram клиент подключен")
     
     async def parse_dialogs(self, hours_ago: int = 24):
         """
@@ -72,18 +96,13 @@ class TelegramVacancyParser:
         
         print(f"\n📅 Ищем сообщения во всех чатах за последние {hours_ago} часов...")
         
-        # Получаем абсолютно все диалоги без лимита
-        dialogs = await self.client.get_dialogs(limit=None)
-        
-        # Фильтруем: Исключаем только переписки с людьми. Оставляем Группы, Каналы и Ботов.
+        # Pyrogram: итерируем диалоги через async for
         target_dialogs = []
-        for d in dialogs:
-            if d.is_group or d.is_channel:
-                target_dialogs.append(d)
-            elif d.is_user:
-                # Проверяем, бот ли это
-                if hasattr(d.entity, 'bot') and d.entity.bot:
-                    target_dialogs.append(d)
+        async for dialog in self.client.get_dialogs():
+            chat = dialog.chat
+            from pyrogram.enums import ChatType
+            if chat.type in (ChatType.SUPERGROUP, ChatType.GROUP, ChatType.CHANNEL, ChatType.BOT):
+                target_dialogs.append(dialog)
         
         self.results['total_chats_scanned'] = len(target_dialogs)
         print(f"🎯 Найдено подходящих источников (каналы, группы, боты): {len(target_dialogs)}\n")
