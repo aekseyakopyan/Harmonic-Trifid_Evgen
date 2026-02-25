@@ -7,13 +7,21 @@ from systems.dashboard.routes import dashboard, leads, cases, settings, services
 
 app = FastAPI(title="Alexey Bot Dashboard", version="1.0.0")
 
-# CORS for local development
+# CORS: разрешаем только конкретные источники (wildcard + credentials запрещён по стандарту)
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000"
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Include API routers BEFORE static files

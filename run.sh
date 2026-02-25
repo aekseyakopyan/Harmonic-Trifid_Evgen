@@ -54,10 +54,17 @@ echo ""
 echo -e "${GREEN}🚀 Запуск компонентов...${NC}"
 echo ""
 
-# Освобождение порта 8000 если занят
-if lsof -i:8000 -t >/dev/null ; then
+# Убеждаемся, что директория логов существует
+mkdir -p logs
+
+# Освобождение порта 8000 если занят (graceful → force)
+if lsof -i:8000 -t >/dev/null 2>&1; then
     echo -e "${YELLOW}⚠️ Порт 8000 занят. Освобождаем...${NC}"
-    kill -9 $(lsof -i:8000 -t) 2>/dev/null
+    kill -15 $(lsof -i:8000 -t) 2>/dev/null || true
+    sleep 2
+    if lsof -i:8000 -t >/dev/null 2>&1; then
+        kill -9 $(lsof -i:8000 -t) 2>/dev/null || true
+    fi
 fi
 
 # Запуск бота

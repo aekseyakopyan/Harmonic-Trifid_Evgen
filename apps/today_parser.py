@@ -5,13 +5,18 @@
 import asyncio
 import json
 import os
+from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from pyrogram import Client
 from pyrogram.types import MessageEntityTextUrl
 from dotenv import load_dotenv
 
 import sys
-sys.path.append(os.getcwd())
+# Абсолютный путь к корню проекта — не зависит от рабочей директории при запуске
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from systems.parser.vacancy_analyzer.scorer import VacancyScorer
 from systems.parser.vacancy_analyzer.contact_extractor import ContactExtractor
@@ -29,8 +34,6 @@ class TelegramVacancyParser:
     """Парсер вакансий из Telegram каналов и групп"""
     
     def __init__(self):
-        self.api_id = settings.TELEGRAM_API_ID
-        self.api_hash = settings.TELEGRAM_API_HASH
         self.api_id = settings.TELEGRAM_API_ID
         self.api_hash = settings.TELEGRAM_API_HASH
         
@@ -70,7 +73,8 @@ class TelegramVacancyParser:
         self.contact_extractor = ContactExtractor()
         self.niche_detector = NicheDetector()
         
-        self.seen_messages = set()
+        # deque с ограничением не даёт расти множеству бесконечно (был unbounded set)
+        self.seen_messages = deque(maxlen=10000)
         self._contacted_today = set()
         self.db = VacancyDatabase()
         self.results = {
@@ -171,7 +175,7 @@ class TelegramVacancyParser:
         if msg_hash in self.seen_messages:
             print(f"      ⏭ Дубликат в текущем цикле (hash: {msg_hash})")
             return # Пропускаем дубликат в рамках текущего запуска
-        self.seen_messages.add(msg_hash)
+        self.seen_messages.append(msg_hash)
         
         # Проверка в базе данных (пропускаем ранее обработанные)
         is_processed = await self.db.is_processed(text)

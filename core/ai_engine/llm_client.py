@@ -1,4 +1,6 @@
 import httpx
+import json
+import re
 from typing import Optional
 from core.config.settings import settings
 from core.utils.logger import logger
@@ -172,10 +174,8 @@ class LLMClient:
         try:
             # Очистка от markdown
             clean_text = text.replace("```json", "").replace("```", "").strip()
-            import re
             match = re.search(r'\{.*\}', clean_text, re.DOTALL)
             if match:
-                import json
                 return json.loads(match.group(0))
         except Exception as e:
             logger.error(f"JSON Parse error: {e}")

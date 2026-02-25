@@ -99,8 +99,8 @@ async def on_new_message(client: Client, message: Message):
                     "id": user.id if user else 0
                 }
             )
-        except Exception:
-            pass
+        except Exception as notify_err:
+            logger.warning(f"Admin notification failed: {notify_err}")
 
 
 @client.on_message(filters.outgoing & filters.private)
@@ -150,9 +150,16 @@ async def main():
 
     logger.info("Userbot is running. Press Ctrl+C to stop.")
 
-    # Start background tasks
+    # Start background tasks (обёртка ловит исключения, иначе они теряются в create_task)
     from systems.alexey.tasks import run_follow_ups
-    asyncio.create_task(run_follow_ups(client))
+
+    async def _safe_follow_ups():
+        try:
+            await run_follow_ups(client)
+        except Exception as e:
+            logger.error(f"Background task run_follow_ups crashed: {e}")
+
+    asyncio.create_task(_safe_follow_ups())
 
     await client.idle()
 
