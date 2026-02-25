@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # Blacklisted usernames (comma-separated, without @)
     BLACKLISTED_USERNAMES: str = "BotFather"
     ADMIN_IDS: str = ""  
-    ADMIN_TELEGRAM_USERNAME: str = "_a1exeyy"  # Your username for escalations
+    ADMIN_TELEGRAM_USERNAME: str = ""  # Установить в .env (без @)
 
     OPENROUTER_API_KEY: str = ""
     # Лучшая модель цена/качество (Уровень GPT-4, но в 20 раз дешевле)
@@ -108,11 +108,11 @@ class Settings(BaseSettings):
     
     # Supervisor Bot (для уведомлений об ошибках)
     SUPERVISOR_BOT_TOKEN: Optional[str] = None
-    SUPERVISOR_CHAT_ID: str = "_a1exeyy"
-    
+    SUPERVISOR_CHAT_ID: Optional[int] = None  # Числовой chat ID (не username!)
+
     # Logging
     LOG_LEVEL: str = "INFO"
-    DEBUG: bool = True
+    DEBUG: bool = False
     
     # Outreach Settings
     OUTREACH_ENABLED: bool = False

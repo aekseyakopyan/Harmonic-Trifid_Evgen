@@ -161,19 +161,6 @@ class VacancyDatabase:
                 await db.commit()
                 return False
     
-    def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None) -> bool:
-        """
-        Добавляет отклонённую вакансию в базу.
-        
-        Args:
-            text: текст вакансии
-            source: источник (название канала)
-            reason: причина отклонения
-            date: дата обнаружения (ISO format), если None - текущая дата
-            
-        Returns:
-            True если успешно добавлено, False если уже существует
-        """
     async def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None) -> bool:
         """Добавляет отклонённую вакансию в базу."""
         vacancy_hash = self._generate_hash(text)
@@ -337,7 +324,7 @@ class VacancyDatabase:
                 
             leads.append(Lead(
                 id=row[0], hash=row[1], text=row[2], source_channel=row[3],
-                timestamp=ts, message_id=5, chat_id=6,
+                timestamp=ts, message_id=row[5], chat_id=row[6],
                 tier=None, informativeness_score=row[8] or 0.0,
                 needs_review=bool(row[9]), manual_label=row[10], embedding=row[11]
             ))
