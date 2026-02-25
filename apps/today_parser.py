@@ -371,31 +371,43 @@ class TelegramVacancyParser:
             delay = random.uniform(3, 10)
             await asyncio.sleep(delay)
             
-            # ПРОВЕРКА: бот не должен писать чатам/каналам/ботам (только физлица)
-            from telethon.tl.types import User
-            try:
-                entity = await self.client.get_entity(contact_link)
-                if not isinstance(entity, User):
-                    print(f"   ⏭ Пропуск: {contact_link} не является пользователем (Chat/Channel)")
-                    return
-                if entity.bot:
-                    print(f"   ⏭ Пропуск: {contact_link} является ботом")
-                    return
-            except Exception as e:
-                print(f"   ⚠️ Не удалось определить тип сущности для {contact_link}: {e}")
-                # Если не можем определить, лучше пропустить для безопасности
-                return
-
-            # Отправка через клиент парсера
-            await self.client.send_message(entity, text)
-            self._contacted_today.add(contact_link)
-            print(f"   📤 Отправлено сообщение лиду: {contact_link} ({entity.first_name})")
+            # ✨ Умная отправка: пробуем по username, потом по ID (InputPeerUser hack), потом через участников чатов
+            from core.utils.smart_sender import smart_send_message
             
-            # Пауза после отправки (антиспам)
-            await asyncio.sleep(random.uniform(30, 60))
+            # Определяем получателя: число → int, иначе строка без @
+            if clean_contact.isdigit():
+                recipient_key = int(clean_contact)
+            else:
+                recipient_key = clean_contact
+            
+            # Собираем ID мониторируемых чатов для Стратегии 3 (поиск участников)
+            chat_ids = []
+            try:
+                dialogs = await self.client.get_dialogs(limit=200)
+                chat_ids = [d.id for d in dialogs if d.is_channel or d.is_group]
+            except Exception:
+                pass
+            
+            sent = await smart_send_message(
+                client=self.client,
+                recipient=recipient_key,
+                text=text,
+                simulate_typing=True,
+                typing_duration=random.uniform(2, 5),
+                monitored_chats_ids=chat_ids
+            )
+            
+            if sent:
+                self._contacted_today.add(contact_link)
+                print(f"   📤 Отправлено сообщение лиду: {contact_link}")
+                # Пауза после отправки (антиспам)
+                await asyncio.sleep(random.uniform(30, 60))
+            else:
+                print(f"   ❌ Не удалось отправить сообщение лиду {contact_link} (все стратегии провалились)")
             
         except Exception as e:
             print(f"   ❌ Ошибка отправки лиду {contact_link}: {e}")
+
 
     def _calculate_priority(self, analysis: dict, contact: dict, has_form: bool = False) -> str:
         """Вычисляет общий приоритет вакансии"""

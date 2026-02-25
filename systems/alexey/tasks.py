@@ -172,26 +172,32 @@ async def run_automated_outreach(client: TelegramClient):
                             logger.info(f"[DRY-RUN] Would send to {recipient}:\n{response_text}")
                             continue
 
-                        # 5. Отправка (с имитацией набора)
+                        # 5. ✨ Умная отправка (username → ID hash=0 → участники чатов → телефон)
+                        from core.utils.smart_sender import smart_send_message
+                        
+                        # Определяем ключ получателя: int если числовой ID, иначе строка
+                        clean_recipient_str = str(clean_recipient)
+                        recipient_key = int(clean_recipient) if clean_recipient_str.isdigit() else clean_recipient
+                        
+                        # Собираем список чатов для стратегии 3 (поиск участника)
+                        chat_ids_for_lookup = [d.id for d in dialogs if d.is_channel or d.is_group]
+                        
                         try:
-                            # Дополнительная проверка рубильника прямо перед отправкой
-                            # ПРОВЕРКА: только физлица
-                            from telethon.tl.types import User
-                            entity = await client.get_entity(recipient)
-                            if not isinstance(entity, User) or entity.bot:
-                                logger.info(f"Skipping {recipient} - not a human user")
-                                continue
-
-                            await humanity_manager.simulate_typing(client, entity, response_text)
-                            await interceptor.send_message(entity, response_text)
-                            logger.info(f"Outreach sent to {recipient} ({entity.first_name})")
-                            
-                            # Задержка антиспам между разными рассылками
-                            import random
-                            await asyncio.sleep(60 + random.randint(30, 90) * analysis['relevance_score']) 
-                                
+                            sent = await smart_send_message(
+                                client=client,
+                                recipient=recipient_key,
+                                text=response_text,
+                                simulate_typing=True,
+                                typing_duration=humanity_manager.get_typing_duration(response_text),
+                                monitored_chats_ids=chat_ids_for_lookup[:20]
+                            )
+                            if sent:
+                                logger.info(f"Outreach sent to {recipient}")
+                            else:
+                                logger.error(f"All strategies failed for {recipient}")
                         except Exception as e:
                             logger.error(f"Failed to send outreach to {recipient}: {e}")
+
                     
                     # Помечаем чат как прочитанный после обработки
                     try:
