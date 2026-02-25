@@ -9,6 +9,30 @@
             "env": {
                 "PROJECT_ROOT": "/Users/set/.gemini/antigravity/playground/Evgeniy"
             }
+        },
+        "sqlite-bot": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-server-sqlite-npx",
+                "/Users/set/.gemini/antigravity/playground/Evgeniy/data/db/bot_data.db"
+            ]
+        },
+        "sqlite-vacancies": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-server-sqlite-npx",
+                "/Users/set/.gemini/antigravity/playground/Evgeniy/data/db/vacancies.db"
+            ]
+        },
+        "sqlite-leads-history": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-server-sqlite-npx",
+                "/Users/set/.gemini/antigravity/playground/Evgeniy/data/db/history_buyer_leads.db"
+            ]
         }
     },
     "contexts": {
