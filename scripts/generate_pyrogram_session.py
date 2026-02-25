@@ -1,16 +1,10 @@
 """
-generate_pyrogram_session.py — Генерация Pyrogram StringSession.
-
-Запустите этот скрипт ОДИН РАЗ для авторизации:
-  python3 generate_pyrogram_session.py
-
-Введете номер телефона и SMS-код. Скрипт сохранит session string в:
-  data/sessions/alexey_pyrogram.txt
-
-После этого перезапустите систему через ./start_all.sh
+auth_pyrogram.py — Автоматизированная авторизация Pyrogram с номером из .env.
+Читает код из stdin (позволяет передать через pipe).
 """
 import asyncio
 import os
+import sys
 from pyrogram import Client
 from dotenv import load_dotenv
 
@@ -18,39 +12,48 @@ load_dotenv()
 
 API_ID = int(os.getenv("TELEGRAM_API_ID", 0))
 API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+PHONE = os.getenv("TELEGRAM_PHONE", "")
 
 
 async def main():
-    print("=" * 50)
-    print("Генератор Pyrogram StringSession")
-    print("=" * 50)
-    print(f"API_ID: {API_ID}")
-    print(f"API_HASH: {API_HASH[:8]}...")
-    print()
-
-    # Временный клиент для получения session string
+    print(f"Авторизация Pyrogram для: {PHONE}")
+    
     app = Client(
         name="temp_auth",
         api_id=API_ID,
         api_hash=API_HASH,
+        phone_number=PHONE,
         in_memory=True
     )
 
-    async with app:
-        session_string = await app.export_session_string()
-        me = await app.get_me()
-        print(f"\n✅ Авторизован как: {me.first_name} (@{me.username})")
-        print(f"   ID: {me.id}")
+    await app.connect()
+    
+    sent_code = await app.send_code(PHONE)
+    print(f"📱 КОД ОТПРАВЛЕН на {PHONE}")
+    print("Введите код из Telegram: ", end="", flush=True)
+    
+    code = input().strip()
+    
+    try:
+        await app.sign_in(PHONE, sent_code.phone_code_hash, code)
+    except Exception as e:
+        if "PASSWORD" in str(e).upper() or "two" in str(e).lower():
+            print("Введите пароль 2FA: ", end="", flush=True)
+            password = input().strip()
+            await app.check_password(password)
+        else:
+            raise
 
-    # Сохраняем session string
+    session_string = await app.export_session_string()
+    me = await app.get_me()
+    print(f"\n✅ Авторизован: {me.first_name} (@{me.username}) ID={me.id}")
+
+    await app.disconnect()
+
     os.makedirs("data/sessions", exist_ok=True)
-    session_path = "data/sessions/alexey_pyrogram.txt"
-    with open(session_path, "w") as f:
+    with open("data/sessions/alexey_pyrogram.txt", "w") as f:
         f.write(session_string)
-
-    print(f"\n💾 Session string сохранена в: {session_path}")
-    print("\n🚀 Теперь можно перезапустить систему: ./stop_all.sh && ./start_all.sh")
-    print("   Повторная авторизация больше не потребуется!")
+    print("💾 Session сохранена в data/sessions/alexey_pyrogram.txt")
 
 
 if __name__ == "__main__":
