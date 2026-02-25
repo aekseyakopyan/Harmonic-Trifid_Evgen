@@ -175,13 +175,16 @@ async def run_automated_outreach(client: TelegramClient):
                         # 5. Отправка (с имитацией набора)
                         try:
                             # Дополнительная проверка рубильника прямо перед отправкой
-                            if not settings.OUTREACH_ENABLED:
-                                logger.warning("Outreach disabled during process. Aborting send.")
-                                break
+                            # ПРОВЕРКА: только физлица
+                            from telethon.tl.types import User
+                            entity = await client.get_entity(recipient)
+                            if not isinstance(entity, User) or entity.bot:
+                                logger.info(f"Skipping {recipient} - not a human user")
+                                continue
 
-                            await humanity_manager.simulate_typing(client, recipient, response_text)
-                            await interceptor.send_message(recipient, response_text)
-                            logger.info(f"Outreach sent to {recipient}")
+                            await humanity_manager.simulate_typing(client, entity, response_text)
+                            await interceptor.send_message(entity, response_text)
+                            logger.info(f"Outreach sent to {recipient} ({entity.first_name})")
                             
                             # Задержка антиспам между разными рассылками
                             import random
@@ -189,6 +192,12 @@ async def run_automated_outreach(client: TelegramClient):
                                 
                         except Exception as e:
                             logger.error(f"Failed to send outreach to {recipient}: {e}")
+                    
+                    # Помечаем чат как прочитанный после обработки
+                    try:
+                        await client.send_read_acknowledge(chat)
+                    except Exception as e:
+                        logger.warning(f"Failed to mark chat {chat.id} as read: {e}")
                             
                 except Exception as e:
                     logger.error(f"Error parsing chat {chat.id}: {e}")
@@ -283,12 +292,27 @@ async def run_follow_ups(client: TelegramClient):
                             error_msg = None
                             
                             # Отправляем по username если есть, иначе по telegram_id
-                            recipient = f"@{lead.username}" if lead.username else lead.telegram_id
-                            await humanity_manager.simulate_typing(client, recipient, follow_up_text)
+                            recipient = lead.username or lead.telegram_id
+                            
+                            # ПРОВЕРКА: только физлица
+                            from telethon.tl.types import User
                             try:
-                                sent_msg = await interceptor.send_message(recipient, follow_up_text)
+                                entity = await client.get_entity(recipient)
+                                if not isinstance(entity, User) or entity.bot:
+                                    logger.info(f"Skipping follow-up for {recipient} - not a human user")
+                                    continue
+                                
+                                await humanity_manager.simulate_typing(client, entity, follow_up_text)
+                                sent_msg = await interceptor.send_message(entity, follow_up_text)
                             except Exception as e:
-                                logger.error(f"Failed to send follow-up: {e}")
+                                err_str = str(e).lower()
+                                if 'blocked' in err_str or "can't write" in err_str or "forbidden" in err_str:
+                                    logger.info(f"Lead {recipient} blocked the bot or restricted writes. Marking as human_managed.")
+                                    lead.is_human_managed = True
+                                    await session.commit()
+                                    continue  # Не ломаем весь цикл, просто пропускаем
+                                else:
+                                    logger.error(f"Failed to send follow-up to {recipient}: {e}")
                                 status = "failed"
                                 error_msg = str(e)
                             

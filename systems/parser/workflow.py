@@ -10,10 +10,12 @@ class LeadWorkflow:
     """
     
     @staticmethod
-    async def auto_process_lead(lead_data: Dict[str, Any], db_path: str = "vacancies.db"):
+    async def auto_process_lead(lead_data: Dict[str, Any], db_path: str = None):
         """
-        Автоматическая обработка лида в зависимости от tier.
+        Полный цикл обработки: от сырых данных до сохранения в БД.
         """
+        from core.config.settings import settings
+        db_path = db_path or str(settings.VACANCY_DB_PATH)
         tier = lead_data.get("tier", "COLD")
         priority = lead_data.get("priority", 50)
         hash_id = lead_data.get("hash")

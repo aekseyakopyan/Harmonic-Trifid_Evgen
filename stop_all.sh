@@ -1,23 +1,19 @@
 #!/bin/bash
+echo "🛑 Остановка всех процессов Harmonic Trifid..."
 
-cd /Users/set/.gemini/antigravity/playground/Evgeniy
-
-echo "🛑 Остановка Harmonic Trifid"
-
-for pidfile in pids/*.pid; do
-    if [ -f "$pidfile" ]; then
-        pid=$(cat "$pidfile")
-        name=$(basename "$pidfile" .pid)
-        
-        if kill -0 $pid 2>/dev/null; then
-            echo "Останавливаю $name (PID: $pid)..."
-            kill $pid
-            rm "$pidfile"
-        else
-            echo "$name уже не запущен"
+# Остановка по PID если файлы есть
+if [ -d "pids" ]; then
+    for pidfile in pids/*.pid; do
+        if [ -f "$pidfile" ]; then
+            pid=$(cat "$pidfile")
+            echo "Убиваю процесс $pid ($pidfile)"
+            kill -9 $pid 2>/dev/null || true
             rm "$pidfile"
         fi
-    fi
-done
+    done
+fi
 
-echo "✅ Все процессы остановлены"
+# Жёсткий pkill по паттерну проекта для надёжности
+pkill -9 -f "Harmonic-Trifid_Evgen" || true
+
+echo "✅ Все процессы остановлены."

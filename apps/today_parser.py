@@ -114,6 +114,11 @@ class TelegramVacancyParser:
                 
                 if messages_count > 0:
                     print(f"   ✓ Обработано сообщений: {messages_count}")
+                    # Помечаем чат как прочитанный, чтобы не копились уведомления
+                    try:
+                        await self.client.send_read_acknowledge(dialog)
+                    except Exception as e:
+                        print(f"   ⚠️ Не удалось пометить как прочитанное: {e}")
                     
             except Exception as e:
                 print(f"   ❌ Ошибка при парсинге {chat_name}: {e}")
@@ -145,12 +150,17 @@ class TelegramVacancyParser:
         # Дедупликация по тексту (в рамках текущего запуска)
         msg_hash = self._get_message_hash(text)
         if msg_hash in self.seen_messages:
+            print(f"      ⏭ Дубликат в текущем цикле (hash: {msg_hash})")
             return # Пропускаем дубликат в рамках текущего запуска
         self.seen_messages.add(msg_hash)
         
         # Проверка в базе данных (пропускаем ранее обработанные)
-        if self.db.is_processed(text):
+        is_processed = await self.db.is_processed(text)
+        if is_processed:
+            print(f"      ⏭ Уже обработано ранее в БД")
             return  # Вакансия уже была обработана ранее
+        
+        print(f"      📡 Анализируем новое сообщение (длина: {len(text)})")
         
         # Извлекаем кнопки если есть
         buttons_text = ""
@@ -172,113 +182,113 @@ class TelegramVacancyParser:
                     else:
                         buttons_text += f"• {button.text} (инлайн/кнопка)\n"
         
-        # Поиск Google Forms
-        has_google_form = "docs.google.com/forms" in text or "forms.gle" in text or "forms.gle" in buttons_text
-        
-        # Анализ релевантности
-        analysis = self.scorer.analyze_message(text, message.date)
-        
-        vacancy_data = {
-            'channel': channel_name,
-            'message_id': message.id,
-            'date': message.date.isoformat(),
-            'text': text[:500],  # Обрезаем для компактности
-            'full_text': text,
-            'sender_id': message.sender_id,
-            'analysis': analysis,
-            'has_form': has_google_form
-        }
-        
-        if analysis['is_vacancy']:
-            # Получаем информацию о пересланном сообщении
-            fwd_from = None
-            if message.fwd_from:
-                from_id = None
-                if hasattr(message.fwd_from, 'from_id'):
-                    f_id = message.fwd_from.from_id
-                    if hasattr(f_id, 'user_id'):
-                        from_id = f_id.user_id
-                    elif hasattr(f_id, 'channel_id'):
-                        # Сохраняем как channel_id
-                        pass
+        try:
+            # Поиск Google Forms
+            has_google_form = "docs.google.com/forms" in text or "forms.gle" in text or "forms.gle" in buttons_text
+            
+            # Анализ релевантности
+            analysis = self.scorer.analyze_message(text, message.date)
+            
+            vacancy_data = {
+                'channel': channel_name,
+                'message_id': message.id,
+                'date': message.date.isoformat(),
+                'text': text[:500],  # Обрезаем для компактности
+                'full_text': text,
+                'sender_id': message.sender_id,
+                'analysis': analysis,
+                'has_form': has_google_form
+            }
+            
+            if analysis['is_vacancy']:
+                # Получаем информацию о пересланном сообщении
+                fwd_from = None
+                if message.fwd_from:
+                    from_id = None
+                    if hasattr(message.fwd_from, 'from_id'):
+                        f_id = message.fwd_from.from_id
+                        if hasattr(f_id, 'user_id'):
+                            from_id = f_id.user_id
+                    
+                    fwd_from = {
+                        'from_id': from_id,
+                        'from_username': None,
+                        'channel_id': message.fwd_from.from_id.channel_id if hasattr(message.fwd_from, 'from_id') and hasattr(message.fwd_from.from_id, 'channel_id') else None
+                    }
                 
-                fwd_from = {
-                    'from_id': from_id,
-                    'from_username': None, # Для получения username нужно делать дополнительный запрос GetFullUser
-                    'channel_id': message.fwd_from.from_id.channel_id if hasattr(message.fwd_from, 'from_id') and hasattr(message.fwd_from.from_id, 'channel_id') else None
-                }
-            
-            # Получаем username отправителя (только если это человек, не канал)
-            sender_username = None
-            sender_is_user = False
-            try:
-                from telethon.tl.types import User
-                sender = await message.get_sender()
-                if sender and isinstance(sender, User) and hasattr(sender, 'username'):
-                    sender_username = sender.username
-                    sender_is_user = True
-            except Exception as e:  
-                pass
-            
-            # Извлекаем контакт
-            contact_data = self.contact_extractor.extract_contact({
-                'text': text,
-                'buttons': buttons_text,
-                'sender_id': message.sender_id if sender_is_user else None,
-                'fwd_from': fwd_from,
-                'sender_username': sender_username
-            })
-            
-            # Определяем нишу
-            niche_data = self.niche_detector.detect_niche(text)
-            
-            vacancy_data['contact'] = contact_data
-            vacancy_data['niche'] = niche_data
-            # Буст для вакансий с формами
-            vacancy_data['priority'] = self._calculate_priority(analysis, contact_data, has_google_form)
-            vacancy_data['budget'] = analysis.get('budget')
-            
-            # Сохраняем в базу данных как принятую с направлением и контактом
-            direction = analysis.get('specialization', 'Не определено')
-            contact_link = contact_data.get('contact_link')
-            await self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
-            
-            # Немедленная отправка первого сообщения лиду
-            await self._send_outreach_to_lead(contact_link, text, direction)
-            
-            self.results['relevant_vacancies'].append(vacancy_data)
-            
-            status_icon = "📝 ФОРМА!" if has_google_form else "✅ Найдено!"
-            print(f"   {status_icon} Score: {analysis['relevance_score']}, Spec: {analysis['specialization']}")
-        else:
-            # Сохраняем только краткую информацию о нерелевантных
-            if analysis.get('rejection_reason'):
-                self.results['irrelevant_messages'].append({
-                    'channel': channel_name,
-                    'message_id': message.id,
-                    'rejection_reason': analysis.get('rejection_reason'),
-                    'score': analysis['relevance_score']
+                sender_username = None
+                sender_is_user = False
+                try:
+                    from telethon.tl.types import User
+                    sender = await message.get_sender()
+                    if sender and isinstance(sender, User) and hasattr(sender, 'username'):
+                        sender_username = sender.username
+                        sender_is_user = True
+                except:  
+                    pass
+                
+                # Извлекаем контакт
+                contact_data = self.contact_extractor.extract_contact({
+                    'text': text,
+                    'buttons': buttons_text,
+                    'sender_id': message.sender_id if sender_is_user else None,
+                    'fwd_from': fwd_from,
+                    'sender_username': sender_username
                 })
-        
-        # Сохраняем в базу данных как отклонённую
-        if analysis.get('rejection_reason'):
-            await self.db.add_rejected(
-                text,
-                channel_name,
-                analysis.get('rejection_reason'),
-                message.date.isoformat()
-            )
-        
-        # Сохраняем ВООБЩЕ ВСЕ для полного дампа
-        self.results['all_messages'].append({
-            'channel': channel_name,
-            'message_id': message.id,
-            'date': message.date.isoformat(),
-            'full_text': text,
-            'is_relevant': analysis['is_vacancy'],
-            'relevance_score': analysis['relevance_score'],
-            'rejection_reason': analysis.get('rejection_reason')
-        })
+                
+                # Определяем нишу
+                niche_data = self.niche_detector.detect_niche(text)
+                
+                vacancy_data['contact'] = contact_data
+                vacancy_data['niche'] = niche_data
+                vacancy_data['priority'] = self._calculate_priority(analysis, contact_data, has_google_form)
+                vacancy_data['budget'] = analysis.get('budget')
+                
+                # Сохраняем в базу данных как принятую с направлением и контактом
+                direction = analysis.get('specialization', 'Не определено')
+                contact_link = contact_data.get('contact_link')
+                await self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
+                
+                # Немедленная отправка первого сообщения лиду
+                await self._send_outreach_to_lead(contact_link, text, direction)
+                
+                self.results['relevant_vacancies'].append(vacancy_data)
+                
+                status_icon = "📝 ФОРМА!" if has_google_form else "✅ Найдено!"
+                print(f"   {status_icon} Score: {analysis['relevance_score']}, Spec: {analysis['specialization']}")
+            else:
+                # Сохраняем только краткую информацию о нерелевантных
+                if analysis.get('rejection_reason'):
+                    self.results['irrelevant_messages'].append({
+                        'channel': channel_name,
+                        'message_id': message.id,
+                        'rejection_reason': analysis.get('rejection_reason'),
+                        'score': analysis['relevance_score']
+                    })
+                
+                # Сохраняем в базу данных как отклонённую
+                if analysis.get('rejection_reason'):
+                    await self.db.add_rejected(
+                        text,
+                        channel_name,
+                        analysis.get('rejection_reason'),
+                        message.date.isoformat()
+                    )
+            
+            # Сохраняем ВООБЩЕ ВСЕ для полного дампа
+            self.results['all_messages'].append({
+                'channel': channel_name,
+                'message_id': message.id,
+                'date': message.date.isoformat(),
+                'full_text': text,
+                'is_relevant': analysis['is_vacancy'],
+                'relevance_score': analysis['relevance_score'],
+                'rejection_reason': analysis.get('rejection_reason')
+            })
+        except Exception as e:
+            print(f"      ❌ Ошибка при анализе сообщения: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def _send_outreach_to_lead(self, contact_link: str, vacancy_text: str, specialization: str):
         """
@@ -361,10 +371,25 @@ class TelegramVacancyParser:
             delay = random.uniform(3, 10)
             await asyncio.sleep(delay)
             
+            # ПРОВЕРКА: бот не должен писать чатам/каналам/ботам (только физлица)
+            from telethon.tl.types import User
+            try:
+                entity = await self.client.get_entity(contact_link)
+                if not isinstance(entity, User):
+                    print(f"   ⏭ Пропуск: {contact_link} не является пользователем (Chat/Channel)")
+                    return
+                if entity.bot:
+                    print(f"   ⏭ Пропуск: {contact_link} является ботом")
+                    return
+            except Exception as e:
+                print(f"   ⚠️ Не удалось определить тип сущности для {contact_link}: {e}")
+                # Если не можем определить, лучше пропустить для безопасности
+                return
+
             # Отправка через клиент парсера
-            await self.client.send_message(contact_link, text)
+            await self.client.send_message(entity, text)
             self._contacted_today.add(contact_link)
-            print(f"   📤 Отправлено сообщение лиду: {contact_link}")
+            print(f"   📤 Отправлено сообщение лиду: {contact_link} ({entity.first_name})")
             
             # Пауза после отправки (антиспам)
             await asyncio.sleep(random.uniform(30, 60))

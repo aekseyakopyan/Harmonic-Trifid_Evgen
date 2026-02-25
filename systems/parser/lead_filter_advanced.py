@@ -17,6 +17,26 @@ from systems.parser.vacancy_db import VacancyDatabase
 from core.utils.structured_logger import logger
 
 # ==========================================
+# НОРМАЛИЗАЦИЯ (ХОМОГЛИФЫ)
+# ==========================================
+
+HOMOGLYPH_MAP = {
+    # Latin to Cyrillic
+    'a': 'а', 'b': 'в', 'e': 'е', 'h': 'н', 'k': 'к', 'm': 'м', 'o': 'о', 'p': 'р', 'c': 'с', 't': 'т', 'y': 'у', 'x': 'х',
+    'A': 'А', 'B': 'В', 'E': 'Е', 'H': 'Н', 'K': 'К', 'M': 'М', 'O': 'О', 'P': 'Р', 'C': 'С', 'T': 'Т', 'Y': 'У', 'X': 'Х',
+    # Greek to Cyrillic
+    'α': 'а', 'β': 'в', 'ε': 'е', 'η': 'н', 'κ': 'к', 'μ': 'м', 'ο': 'о', 'π': 'п', 'ρ': 'р', 'τ': 'т', 'υ': 'у', 'χ': 'х',
+    'Α': 'А', 'Β': 'В', 'Ε': 'Е', 'Η': 'Н', 'Κ': 'К', 'Μ': 'М', 'Ο': 'О', 'Π': 'П', 'Ρ': 'Р', 'Τ': 'Т', 'Υ': 'У', 'Χ': 'Х',
+}
+
+def normalize_homoglyphs(text: str) -> str:
+    """Заменяет визуально похожие латинские и греческие символы на кириллицу."""
+    res = ""
+    for char in text:
+        res += HOMOGLYPH_MAP.get(char, char)
+    return res
+
+# ==========================================
 # КОНФИГУРАЦИЯ
 # ==========================================
 
@@ -44,13 +64,19 @@ BLACKLIST_CONFIG = {
         r"легкий заработок",
         r"без вложений.*\d+.*рублей",
         r"пассивный доход от",
+        # Схемы «тестирование доставки/сервисов за деньги»
+        r"провер(?:ка|ить|яем).*(?:доставк|сервис|магазин).*(?:\d+[\s]*(?:₽|руб|рублей))",
+        r"(?:заказ|покупк).*за наш счёт.*(?:\d+[\s]*(?:₽|руб|рублей))",
+        r"тайный покупатель",
+        r"mystery.?shopper",
     ],
     
     # Ключевые слова мошенничества
     "scam_keywords": [
         "воркер", "воркеров", "дропы", "обнал", 
         "кардинг", "прогрев аккаунтов", "регистрация аккаунтов",
-        "европа бан", "anti-detect", "antidetect"
+        "европа бан", "anti-detect", "antidetect",
+        "поиск людей для проверки", "проверка сервиса доставки",
     ],
     
     # Нерелевантные ниши (жёсткие)
@@ -61,6 +87,16 @@ BLACKLIST_CONFIG = {
         "юридические услуги",
         "бухгалтерия",
         "1с программист",
+        "видеомонтаж",
+        "озон", "ozon", "wildberries", "wb поставщик",
+        "маркетплейс", "инфографика для wb",
+        "закупщик рекламы", "байер",
+        "фотофиксация", "фотографирование помещений",
+        "иллюстратор", "художник",
+        "переводчик", "копирайтер со знанием",
+        "отзывы за деньги", "отзывы авито", "отзывы wb",
+        "заработок без вложений", "доход в день",
+        "подработка подростку", "работа для студентов без опыта",
     ],
 }
 
@@ -172,16 +208,51 @@ DIRECTION_RELEVANCE = {
         "контекстная реклама",
         "авито",
         "разработка сайтов",
+        "Digital Marketing",
+        "SMM",
+        "маркетинг",
     ],
     "secondary": [  # Второстепенные (+1 балл)
         "интернет-маркетинг",
         "веб-дизайн",
+        "email маркетинг",
+        "лендинг",
     ],
     "irrelevant": [  # Нерелевантные (-2 балла)
-        "таргетированная реклама",  # если вы НЕ делаете таргет
-        "Keyword Match",  # обычно мусор
+        "таргетированная реклама",
+        "маркетплейс",
+        "WB", "OZON",
+        "Keyword Match",
+        "Unknown",  # неопределённая ниша → штраф
     ]
 }
+
+# ==========================================
+# ОПРЕДЕЛЕНИЕ НИШИ ПО ТЕКСТУ
+# ==========================================
+
+DIRECTION_KEYWORDS = {
+    "SEO": ["seo", "сео", "поисковое продвижение", "позиции в поиске", "ссылочная масса", "семантическое ядро"],
+    "контекстная реклама": ["яндекс директ", "google ads", "контекстная реклама", "директ", "контекст"],
+    "авито": ["авито", "avito", "доски объявлений"],
+    "разработка сайтов": ["сайт", "лендинг", "landing page", "tilda", "тильда", "wordpress", "верстка"],
+    "SMM": ["smm", "инстаграм", "instagram", "вконтакте", "вк", "telegram канал", "ведение соцсети"],
+    "маркетинг": ["маркетинг", "digital", "продвижение бизнеса", "лид", "лидогенерация", "воронка продаж"],
+    "интернет-маркетинг": ["интернет маркетинг", "онлайн маркетинг"],
+    "веб-дизайн": ["веб дизайн", "ui/ux", "figma", "дизайн сайта", "прототип"],
+}
+
+def detect_direction(text: str) -> str:
+    """Определяет нишу вакансии по ключевым словам в тексте."""
+    text_lower = text.lower()
+    scores = {}
+    for direction, keywords in DIRECTION_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in text_lower)
+        if score > 0:
+            scores[direction] = score
+    if scores:
+        return max(scores, key=scores.get)
+    return "Unknown"
 
 # ==========================================
 # УРОВЕНЬ 0: НОРМАЛИЗАЦИЯ
@@ -261,31 +332,33 @@ def check_hard_blocks(text: str, features: Dict[str, Any]) -> Tuple[bool, str]:
     Проверяет жёсткие блокировки.
     Returns: (is_blocked, reason)
     """
-    text_lower = features["text_lower"]
+    text_raw_lower = features["text_lower"]
+    # Нормализуем хомоглифы для проверки стоп-слов
+    text_norm_lower = normalize_homoglyphs(text_raw_lower)
     
     # 1. Блокировка по доменам
     for domain in BLACKLIST_CONFIG["domains"]:
-        if domain in text_lower:
+        if domain in text_raw_lower:
             return (True, f"BLACKLIST_DOMAIN: {domain}")
     
     # 2. Блокировка по ботам
     for bot in BLACKLIST_CONFIG["bots"]:
-        if bot in text_lower:
+        if bot in text_raw_lower:
             return (True, f"BLACKLIST_BOT: {bot}")
     
-    # 3. Мошеннические паттерны
+    # 3. Мошеннические паттерны (проверяем и в сыром, и в нормализованном)
     for pattern in BLACKLIST_CONFIG["scam_patterns"]:
-        if re.search(pattern, text_lower):
+        if re.search(pattern, text_raw_lower) or re.search(pattern, text_norm_lower):
             return (True, f"SCAM_PATTERN: {pattern}")
     
     # 4. Ключевые слова мошенничества
     for keyword in BLACKLIST_CONFIG["scam_keywords"]:
-        if keyword in text_lower:
+        if keyword in text_raw_lower or keyword in text_norm_lower:
             return (True, f"SCAM_KEYWORD: {keyword}")
     
     # 5. Нерелевантные ниши
     for niche in BLACKLIST_CONFIG["irrelevant_hard"]:
-        if niche in text_lower:
+        if niche in text_raw_lower or niche in text_norm_lower:
             return (True, f"IRRELEVANT_NICHE: {niche}")
     
     # 6. Слишком много эмодзи (spam indicator)
@@ -672,7 +745,7 @@ async def filter_lead_advanced(
     
     # Structured Logging
     log_data = {
-        "event": "lead_classified",
+        "action": "lead_classified",
         "is_lead": is_lead,
         "confidence": confidence,
         "reason": reason,
@@ -710,8 +783,8 @@ class LeadFilterAdvanced:
     async def analyze(self, text: str, message_id: int = None, chat_id: int = None, source: str = "unknown") -> Dict[str, Any]:
         """Async analysis of a lead."""
         await self.db.init_db()
-        # Note: We assume direction is core for now or detected elsewhere
-        direction = "SEO" # Default
+        # Определяем нишу по тексту вместо хардкода
+        direction = detect_direction(text)
         
         result = await filter_lead_advanced(
             text=text,
@@ -721,6 +794,9 @@ class LeadFilterAdvanced:
             use_llm_for_uncertain=True,
             use_deduplication=True
         )
+        
+        # Сохраняем определённое направление
+        result["direction"] = direction
         
         # Guard for missing keys from filter_lead_advanced
         if "tier" not in result:

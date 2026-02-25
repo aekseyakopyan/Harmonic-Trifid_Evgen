@@ -8,8 +8,9 @@ from core.utils.logger import logger
 class ReportGenerator:
     """Генератор ежедневных и недельных отчетов по парсингу вакансий."""
     
-    def __init__(self, db_path: str = "vacancies.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        from core.config.settings import settings
+        self.db_path = db_path or str(settings.VACANCY_DB_PATH)
         self.reports_dir = "reports"
         os.makedirs(f"{self.reports_dir}/daily", exist_ok=True)
         os.makedirs(f"{self.reports_dir}/weekly", exist_ok=True)

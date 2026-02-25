@@ -1,99 +1,753 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Harmonic Trifid</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Harmonic Trifid | Control Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: var(--tg-theme-bg-color, #0f0f0f);
-            color: var(--tg-theme-text-color, #ffffff);
+        :root {
+            --bg-dark: #0a0a0c;
+            --bg-card: rgba(255, 255, 255, 0.03);
+            --border-card: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-secondary: #a1a1aa;
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --glass: rgba(255, 255, 255, 0.02);
         }
-        .container { max-width: 600px; margin: 0 auto; padding: 16px; }
-        .header { padding: 20px 0; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 20px; }
-        .header h1 { font-size: 24px; margin-bottom: 8px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 24px; }
-        .stat-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; border: 1px solid rgba(255,255,255,0.1); }
-        .stat-value { font-size: 32px; font-weight: bold; color: var(--tg-theme-button-color, #3390ec); }
-        .stat-label { font-size: 12px; color: var(--tg-theme-hint-color, #aaa); margin-top: 4px; }
-        .section-title { font-size: 18px; font-weight: 600; margin: 24px 0 12px 0; }
-        .lead-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.1); cursor: pointer; }
-        .lead-card:active { background: rgba(255,255,255,0.1); }
-        .lead-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .priority-badge { background: #ff4444; color: white; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
-        .lead-text { font-size: 14px; line-height: 1.5; }
-        .loading { text-align: center; padding: 40px; color: var(--tg-theme-hint-color, #aaa); }
-        .button { width: 100%; background: var(--tg-theme-button-color, #3390ec); color: var(--tg-theme-button-text-color, #ffffff); border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.5;
+            overflow-x: hidden;
+            background-image:
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(168, 85, 247, 0.1) 0px, transparent 50%);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .app-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            padding: 16px 24px;
+            background: var(--glass);
+            backdrop-filter: blur(12px);
+            border-radius: 16px;
+            border: 1px solid var(--border-card);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 20px;
+            font-weight: 700;
+            background: linear-gradient(to right, #818cf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Nav */
+        nav {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 32px;
+            background: var(--glass);
+            padding: 6px;
+            border-radius: 12px;
+            width: fit-content;
+            border: 1px solid var(--border-card);
+        }
+
+        .nav-btn {
+            padding: 8px 20px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .nav-btn.active {
+            background: var(--accent);
+            color: white;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        /* Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(8px);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .card-value {
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        /* Statuses */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+
+        .status-on {
+            background-color: var(--success);
+            box-shadow: 0 0 8px var(--success);
+        }
+
+        .status-off {
+            background-color: var(--error);
+            box-shadow: 0 0 8px var(--error);
+        }
+
+        .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 10px;
+            margin-bottom: 8px;
+        }
+
+        /* Tables */
+        .table-container {
+            overflow-x: auto;
+            border-radius: 12px;
+            border: 1px solid var(--border-card);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.03);
+            text-align: left;
+            padding: 12px 16px;
+            color: var(--text-secondary);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-card);
+        }
+
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-card);
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        /* Logs */
+        .log-viewer {
+            background: #050505;
+            padding: 20px;
+            border-radius: 12px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px;
+            height: 500px;
+            overflow-y: auto;
+            border: 1px solid var(--border-card);
+            white-space: pre-wrap;
+            color: #d1d5db;
+        }
+
+        .log-error {
+            color: #f87171;
+        }
+
+        .log-warn {
+            color: #fbbf24;
+        }
+
+        .log-info {
+            color: #818cf8;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border-card);
+            color: var(--text-primary);
+        }
+
+        .btn-outline:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-danger:hover {
+            background: var(--error);
+            color: white;
+        }
+
+        /* Helpers */
+        .hidden {
+            display: none;
+        }
+
+        .badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .badge-hot {
+            background: rgba(239, 68, 68, 0.2);
+            color: #fca5a5;
+        }
+
+        .badge-warm {
+            background: rgba(245, 158, 11, 0.2);
+            color: #fcd34d;
+        }
+
+        .loader {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        .modal.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .modal-content {
+            background: #121214;
+            width: 90%;
+            max-width: 600px;
+            border-radius: 20px;
+            padding: 32px;
+            border: 1px solid var(--border-card);
+        }
     </style>
 </head>
+
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 Harmonic Trifid</h1>
-            <div class="subtitle">AI Lead Management + RL</div>
-        </div>
-        <div class="stats-grid" id="stats"><div class="loading">Загрузка...</div></div>
-        <div class="section-title">🔥 HOT-лиды</div>
-        <div id="leads-list"><div class="loading">Загрузка лидов...</div></div>
-    </div>
-    
-    <script>
-        const API_BASE = window.location.origin;
-        let tg = window.Telegram.WebApp;
-        tg.ready();
-        tg.expand();
-        
-        async function loadStats() {
-            try {
-                const response = await fetch(`${API_BASE}/api/stats`);
-                const data = await response.json();
-                document.getElementById('stats').innerHTML = `
-                    <div class="stat-card"><div class="stat-value">${data.total_leads.toLocaleString()}</div><div class="stat-label">Всего лидов</div></div>
-                    <div class="stat-card"><div class="stat-value">${data.hot_leads}</div><div class="stat-label">HOT-лиды</div></div>
-                    <div class="stat-card"><div class="stat-value">${data.leads_24h}</div><div class="stat-label">За 24 часа</div></div>
-                    <div class="stat-card"><div class="stat-value">${data.reply_rate}%</div><div class="stat-label">Конверсия</div></div>
-                `;
-            } catch (error) {
-                console.error('Error loading stats:', error);
-            }
-        }
-        
-        async function loadLeads() {
-            try {
-                const response = await fetch(`${API_BASE}/api/leads/hot`);
-                const data = await response.json();
-                const leadsHtml = data.leads.map(lead => `
-                    <div class="lead-card" onclick="generateOutreach(${lead.id})">
-                        <div class="lead-header">
-                            <div class="lead-id">#${lead.id}</div>
-                            <div class="priority-badge">P${lead.priority}</div>
-                        </div>
-                        <div class="lead-text">${lead.text}</div>
+    <div class="app-container">
+        <header>
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path
+                        d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"
+                        stroke="currentColor" stroke-width="2" />
+                    <path d="M12 6V12L16 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                </svg>
+                Harmonic Trifid
+            </div>
+            <div id="server-time" style="font-size: 14px; color: var(--text-secondary);">--:--:-- UTC</div>
+        </header>
+
+        <nav>
+            <button class="nav-btn active" data-tab="overview">Обзор</button>
+            <button class="nav-btn" data-tab="leads">Очередь</button>
+            <button class="nav-btn" data-tab="all-leads">База лидов</button>
+            <button class="nav-btn" data-tab="logs">Логи</button>
+            <button class="nav-btn" data-tab="settings">Управление</button>
+        </nav>
+
+        <!-- OVERVIEW TAB -->
+        <div id="tab-overview" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Очередь (Pending)</span>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path
+                                d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                        </svg>
                     </div>
-                `).join('');
-                document.getElementById('leads-list').innerHTML = leadsHtml || '<div class="loading">Нет HOT-лидов</div>';
-            } catch (error) {
-                console.error('Error loading leads:', error);
-            }
-        }
-        
-        async function generateOutreach(leadId) {
+                    <div class="card-value" id="stats-queue">0</div>
+                    <div style="margin-top: 12px;">
+                        <button class="btn btn-outline" style="width: 100%;" onclick="resetQueue()">Сбросить
+                            зависшие</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Принято за 24ч</span>
+                        <span id="acceptance-rate" class="badge"
+                            style="background: rgba(34, 197, 94, 0.2); color: var(--success);">0%</span>
+                    </div>
+                    <div class="card-value" id="stats-accepted-24h">0</div>
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">Из <span
+                            id="stats-total-24h">0</span> найденных</div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Всего отправлено</span>
+                    </div>
+                    <div class="card-value" id="stats-sent">0</div>
+                </div>
+            </div>
+
+            <div class="grid" style="grid-template-columns: 2fr 1fr;">
+                <div class="card">
+                    <h3 style="margin-bottom: 20px;">Статус сервисов</h3>
+                    <div id="service-list">
+                        <!-- Services loaded here -->
+                        <div class="loader" style="margin: 0 auto;"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 style="margin-bottom: 20px;">Информация</h3>
+                    <div id="server-info-small" style="font-size: 14px; color: var(--text-secondary);">
+                        <!-- Info loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LEADS TAB (QUEUE) -->
+        <div id="tab-leads" class="tab-content hidden">
+            <div class="card">
+                <div class="card-header">
+                    <h3>Очередь на отправку</h3>
+                    <button class="btn btn-outline" onclick="loadQueue()">Обновить</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Ниша</th>
+                                <th>Тип</th>
+                                <th>Контакт</th>
+                                <th>Текст (превью)</th>
+                                <th>Дата</th>
+                                <th>Действие</th>
+                            </tr>
+                        </thead>
+                        <tbody id="queue-table-body">
+                            <!-- Rows loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ALL LEADS TAB (DATABASE) -->
+        <div id="tab-all-leads" class="tab-content hidden">
+            <div class="card">
+                <div class="card-header">
+                    <h3>База квалифицированных лидов</h3>
+                    <div style="display: flex; gap: 12px;">
+                        <input type="text" id="leads-search" class="btn btn-outline"
+                            style="text-align: left; width: 250px;" placeholder="Поиск по тексту...">
+                        <button class="btn btn-primary" onclick="loadAllLeads(0)">Найти</button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Ниша</th>
+                                <th>Контакт</th>
+                                <th>Статус</th>
+                                <th>Текст запроса</th>
+                                <th>Дата</th>
+                                <th>Просмотр</th>
+                            </tr>
+                        </thead>
+                        <tbody id="all-leads-table-body">
+                            <!-- Rows loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="leads-pagination" style="margin-top: 20px; display: flex; justify-content: center; gap: 10px;">
+                    <!-- Pagination here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- LOGS TAB -->
+        <div id="tab-logs" class="tab-content hidden">
+            <div class="card">
+                <div class="card-header">
+                    <div style="display: flex; gap: 12px;">
+                        <select id="log-select" class="btn btn-outline" style="background: #121214;">
+                            <option value="alexey">Alexey (Outreach)</option>
+                            <option value="gwen">Gwen (Supervisor)</option>
+                            <option value="parser">Parser (Today)</option>
+                            <option value="joiner">Chat Joiner</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="loadLogs()">Показать</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="auto-refresh-logs" checked>
+                        <label for="auto-refresh-logs"
+                            style="font-size: 12px; color: var(--text-secondary);">Автообновление (10с)</label>
+                    </div>
+                </div>
+                <div id="log-container" class="log-viewer">Выберите лог и нажмите "Показать"</div>
+            </div>
+        </div>
+
+        <!-- SETTINGS TAB -->
+        <div id="tab-settings" class="tab-content hidden">
+            <div class="grid">
+                <div class="card">
+                    <h3 style="margin-bottom: 20px;">Управление процессами</h3>
+                    <div style="display: flex; gap: 12px; flex-direction: column;">
+                        <div class="service-item">
+                            <span>Alexey Outreach</span>
+                            <button class="btn btn-danger" onclick="restartService('alexey')">Рестарт</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 style="margin-bottom: 20px;">Сервер</h3>
+                    <div id="server-stats-full" style="font-size: 14px;">
+                        <!-- Server info here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL FOR VACANCY TEXT -->
+    <div id="modal-text" class="modal">
+        <div class="modal-content">
+            <h3 id="modal-title" style="margin-bottom: 16px;">Текст вакансии</h3>
+            <div id="modal-body"
+                style="font-size: 14px; color: var(--text-secondary); white-space: pre-wrap; max-height: 400px; overflow-y: auto;">
+            </div>
+            <div style="margin-top: 24px; display: flex; justify-content: flex-end;">
+                <button class="btn btn-primary" onclick="closeModal()">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = ''; // Relative path
+
+        // Tab Switching
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
+                btn.classList.add('active');
+                document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
+                
+                // Trigger load if needed
+                if(btn.dataset.tab === 'leads') loadQueue();
+                if(btn.dataset.tab === 'all-leads') loadAllLeads();
+                if(btn.dataset.tab === 'logs') loadLogs();
+                if(btn.dataset.tab === 'settings') loadServerInfo();
+            });
+        });
+
+        async function loadOverview() {
             try {
-                tg.showPopup({message: 'Генерирую отклик через RL...'});
-                const response = await fetch(`${API_BASE}/api/outreach/generate?lead_id=${leadId}`, {method: 'POST'});
-                const data = await response.json();
-                tg.showAlert(`✅ Отклик сгенерирован!\n\nСтратегия: ${data.strategy_id}\n\n${data.message}`);
-            } catch (error) {
-                tg.showAlert('Ошибка генерации');
+                // Status
+                const statusRes = await fetch(`${API}/api/system/status`);
+                const status = await statusRes.json();
+                
+                // Stats
+                const statsRes = await fetch(`${API}/api/vacancies/stats`);
+                const stats = await statsRes.json();
+
+                updateUIOverlay(status, stats);
+            } catch (e) {
+                console.error("Load Overview Error:", e);
             }
         }
-        
-        loadStats();
-        loadLeads();
-        setInterval(() => { loadStats(); loadLeads(); }, 30000);
+
+        function updateUIOverlay(status, stats) {
+            // Stats cards
+            document.getElementById('stats-queue').innerText = stats.queue_pending;
+            document.getElementById('stats-accepted-24h').innerText = stats.last_24h.accepted || 0;
+            document.getElementById('stats-total-24h').innerText = stats.total_24h || 0;
+            document.getElementById('stats-sent').innerText = stats.sent_total || 0;
+            document.getElementById('acceptance-rate').innerText = `${stats.acceptance_rate_24h}%`;
+            
+            // Server Time
+            const date = new Date(status.server_time_utc);
+            document.getElementById('server-time').innerText = date.toLocaleTimeString() + ' UTC';
+
+            // Service List
+            const list = document.getElementById('service-list');
+            list.innerHTML = '';
+            for(const [key, srv] of Object.entries(status.services)) {
+                const item = document.createElement('div');
+                item.className = 'service-item';
+                item.innerHTML = `
+                    <div style="display: flex; align-items: center;">
+                        <span class="status-dot ${srv.running ? 'status-on' : 'status-off'}"></span>
+                        <span>${srv.label}</span>
+                    </div>
+                    <span style="font-size: 12px; color: var(--text-secondary);">PID: ${srv.pid || '---'}</span>
+                `;
+                list.appendChild(item);
+            }
+        }
+
+        async function loadQueue() {
+            try {
+                const res = await fetch(`${API}/api/vacancies/queue`);
+                const data = await res.json();
+                const tbody = document.getElementById('queue-table-body');
+                tbody.innerHTML = '';
+                
+                data.leads.forEach(l => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${l.id}</td>
+                        <td style="font-weight: 500;">${l.direction}</td>
+                        <td><span class="badge badge-${l.tier.toLowerCase()}">${l.tier}</span></td>
+                        <td style="font-family: monospace; font-size: 11px;">${l.contact || '---'}</td>
+                        <td style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary);">${l.text_preview}</td>
+                        <td>${new Date(l.last_seen).toLocaleString()}</td>
+                        <td><button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px;" onclick="viewLead(${l.id})">🔍</button></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        let logsInterval;
+        async function loadLogs() {
+            const logName = document.getElementById('log-select').value;
+            const container = document.getElementById('log-container');
+            
+            try {
+                const res = await fetch(`${API}/api/logs/tail?log=${logName}&n=100`);
+                const data = await res.json();
+                if(data.error) {
+                    container.innerText = "Ошибка: " + data.error;
+                    return;
+                }
+                
+                container.innerHTML = data.lines.map(line => {
+                    let colorClass = '';
+                    if(line.includes('ERROR')) colorClass = 'log-error';
+                    else if(line.includes('WARNING')) colorClass = 'log-warn';
+                    else if(line.includes('INFO')) colorClass = 'log-info';
+                    return `<div class="${colorClass}">${line}</div>`;
+                }).join('');
+                
+                container.scrollTop = container.scrollHeight;
+            } catch(e) { container.innerText = "Ошибка сети"; }
+        }
+
+        let allLeadsCache = [];
+        async function loadAllLeads(offset = 0) {
+            const search = document.getElementById('leads-search').value;
+            try {
+                const res = await fetch(`${API}/api/vacancies/accepted?offset=${offset}&search=${encodeURIComponent(search)}`);
+                const data = await res.json();
+                allLeadsCache = data.leads;
+                
+                const tbody = document.getElementById('all-leads-table-body');
+                tbody.innerHTML = '';
+                
+                data.leads.forEach(l => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${l.id}</td>
+                        <td style="font-weight: 500;">${l.direction}</td>
+                        <td style="font-family: monospace; font-size: 11px;">${l.contact || '---'}</td>
+                        <td><span class="badge" style="background: rgba(99, 102, 241, 0.1); color: var(--accent);">${l.response}</span></td>
+                        <td style="max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary);">${l.text}</td>
+                        <td>${new Date(l.last_seen).toLocaleString()}</td>
+                        <td><button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px;" onclick="viewFullLead(${l.id})">👀</button></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+
+                // Pagination
+                const pag = document.getElementById('leads-pagination');
+                const totalPages = Math.ceil(data.total / data.limit);
+                const currentPage = Math.floor(offset / data.limit) + 1;
+                
+                pag.innerHTML = `
+                    <button class="btn btn-outline" ${offset === 0 ? 'disabled' : ''} onclick="loadAllLeads(${offset - data.limit})">←</button>
+                    <span style="display: flex; align-items: center; padding: 0 15px;">Страница ${currentPage} из ${totalPages || 1}</span>
+                    <button class="btn btn-outline" ${offset + data.limit >= data.total ? 'disabled' : ''} onclick="loadAllLeads(${offset + data.limit})">→</button>
+                `;
+            } catch (e) { console.error(e); }
+        }
+
+        function viewFullLead(id) {
+            const lead = allLeadsCache.find(l => l.id === id);
+            if(lead) {
+                document.getElementById('modal-title').innerText = `Лид #${id} | ${lead.direction}`;
+                document.getElementById('modal-body').innerText = lead.text;
+                document.getElementById('modal-text').classList.add('active');
+            }
+        }
+
+        async function loadServerInfo() {
+            try {
+                const res = await fetch(`${API}/api/server/info`);
+                const data = await res.json();
+                const container = document.getElementById('server-stats-full');
+                container.innerHTML = `
+                    <div style="margin-bottom: 8px;"><b>Uptime:</b> ${data.uptime}</div>
+                    <div style="margin-bottom: 8px;"><b>Disk:</b> ${data.disk}</div>
+                    <div style="margin-bottom: 8px;"><b>Memory:</b> ${data.memory}</div>
+                    <div style="margin-bottom: 8px;"><b>IP:</b> ${data.server_ip}</div>
+                `;
+            } catch(e) {}
+        }
+
+        async function resetQueue() {
+            if(!confirm("Сбросить все зависшие лиды (notified) обратно в очередь на отправку?")) return;
+            const res = await fetch(`${API}/api/vacancies/reset-queue`, {method: 'POST'});
+            const data = await res.json();
+            alert(data.message);
+            loadOverview();
+        }
+
+        async function restartService(srv) {
+            if(!confirm(`Перезапустить сервис ${srv}?`)) return;
+            const res = await fetch(`${API}/api/controls/restart?service=${srv}`, {method: 'POST'});
+            const data = await res.json();
+            alert(data.message);
+            loadOverview();
+        }
+
+        async function viewLead(id) {
+            // Re-fetch queue to find full text locally or just fetch single lead if we had such API
+            // For now, let's just use the preview or show a popup
+            const response = await fetch(`${API}/api/vacancies/queue`);
+            const data = await response.json();
+            const lead = data.leads.find(l => l.id === id);
+            if(lead) {
+                document.getElementById('modal-title').innerText = `Лид #${id} | ${lead.direction}`;
+                document.getElementById('modal-body').innerText = lead.text_preview + " ... (см. базу для полного текста)";
+                document.getElementById('modal-text').classList.add('active');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('modal-text').classList.remove('active');
+        }
+
+        // Init
+        loadOverview();
+        loadServerInfo();
+        setInterval(loadOverview, 10000);
+        setInterval(() => {
+            if(document.getElementById('auto-refresh-logs').checked && !document.getElementById('tab-logs').classList.contains('hidden')) {
+                loadLogs();
+            }
+        }, 10000);
+
     </script>
 </body>
+
 </html>

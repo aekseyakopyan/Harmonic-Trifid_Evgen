@@ -75,6 +75,40 @@ async def get_targets():
     return unique_targets
 
 async def run_outreach():
+    print(f"DEBUG: Working directory: {os.getcwd()}")
+    from core.config.settings import settings
+    print(f"DEBUG: settings.DATABASE_URL: {settings.DATABASE_URL}")
+    print(f"DEBUG: settings.async_database_url: {settings.async_database_url}")
+    
+    import sqlite3
+    db_file = "data/db/bot_data.db"
+    if os.path.exists(db_file):
+        abs_db = os.path.abspath(db_file)
+        print(f"DEBUG: Absolute path to {db_file}: {abs_db}")
+        conn = sqlite3.connect(db_file)
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(leads)")
+        cols = [r[1] for r in c.fetchall()]
+        print(f"DEBUG: Columns in {abs_db}: {cols}")
+        conn.close()
+    else:
+        print(f"DEBUG: Database file {db_file} NOT FOUND at {os.path.abspath(db_file)}")
+
+    # Загрузка сессии
+    try:
+        with open("data/sessions/session_string_final.txt", "r") as f:
+            session_str = f.read().strip()
+    except Exception as e:
+        print(f"Ошибка загрузки сессии: {e}")
+        return
+
+    client = TelegramClient(StringSession(session_str), settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
+    await client.connect()
+    
+    if not await client.is_user_authorized():
+        print("Клиент не авторизован!")
+        return
+
     # Загрузка сессии
     try:
         with open("data/sessions/session_string_final.txt", "r") as f:
@@ -150,9 +184,23 @@ async def run_outreach():
                 # 2. Имитация набора текста
                 await humanity_manager.simulate_typing(client, link, response_text)
                 
+                # ПРОВЕРКА: только физлица
+                from telethon.tl.types import User
+                try:
+                    entity = await client.get_entity(link)
+                    if not isinstance(entity, User):
+                        print(f"   ⏭ Пропуск: {link} не является пользователем")
+                        continue
+                    if entity.bot:
+                        print(f"   ⏭ Пропуск: {link} является ботом")
+                        continue
+                except Exception as e:
+                    print(f"   ⚠️ Ошибка определения типа {link}: {e}")
+                    continue
+
                 # 3. Отправка
-                sent_msg = await client.send_message(link, response_text)
-                print(f"   ✅ Отправлено!")
+                sent_msg = await client.send_message(entity, response_text)
+                print(f"   ✅ Отправлено {entity.first_name}!")
 
                 # Лог сообщения
                 msg_log = MessageLog(

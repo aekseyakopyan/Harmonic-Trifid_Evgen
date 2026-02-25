@@ -1,26 +1,30 @@
 """
-FastAPI backend для Telegram Mini App.
-Предоставляет API для управления лидами и RL статистикой.
+FastAPI backend для Telegram Mini App + Web Dashboard.
+Предоставляет API для мониторинга системы, управления лидами и RL статистикой.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import aiosqlite
+import asyncio
+import subprocess
+import os
+import re
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core.config.settings import settings
-from systems.alexey.rl_agent import rl_agent
 
-app = FastAPI(title="Harmonic Trifid Mini App API")
+app = FastAPI(title="Harmonic Trifid Dashboard API")
 
-# CORS для Telegram
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,7 +33,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+LOG_FILES = {
+    "alexey": PROJECT_ROOT / "logs" / "alexey.log",
+    "gwen":   PROJECT_ROOT / "logs" / "gwen.log",
+    "parser": PROJECT_ROOT / "logs" / "parser.log",
+    "joiner": PROJECT_ROOT / "logs" / "chat_joiner.log",
+}
+
+# ─────────────────────────────────────────────
 # Pydantic models
+# ─────────────────────────────────────────────
+
 class DealUpdateRequest(BaseModel):
     outreach_id: int
     deal_closed: bool
@@ -41,122 +56,362 @@ class FeedbackRequest(BaseModel):
     client_replied: bool
     reply_time_seconds: Optional[int] = None
 
+# ─────────────────────────────────────────────
+# SYSTEM STATUS
+# ─────────────────────────────────────────────
+
+@app.get("/api/system/status")
+async def get_system_status():
+    """Статус всех ключевых процессов системы."""
+    services = {
+        "alexey":   {"pattern": "systems/alexey/main.py",    "label": "Alexey Outreach"},
+        "parser":   {"pattern": "main.py parse today",       "label": "Today Parser"},
+        "gwen":     {"pattern": "systems/gwen/bot.py",       "label": "Gwen Supervisor"},
+        "joiner":   {"pattern": "apps/chat_joiner.py",       "label": "Chat Joiner"},
+        "miniapp":  {"pattern": "systems/miniapp/api.py",    "label": "Mini App API"},
+        "dashboard":{"pattern": "systems/dashboard/main.py", "label": "Dashboard"},
+    }
+
+    result = {}
+    try:
+        proc = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+        ps_out = proc.stdout
+    except Exception:
+        ps_out = ""
+
+    for key, info in services.items():
+        lines = [l for l in ps_out.splitlines() if info["pattern"] in l and "grep" not in l]
+        running = len(lines) > 0
+        pid = None
+        uptime_str = None
+        if running and lines:
+            parts = lines[0].split()
+            pid = parts[1] if len(parts) > 1 else None
+            # column 8 = start time (ps aux)
+            start_raw = parts[8] if len(parts) > 8 else None
+            uptime_str = parts[9] if len(parts) > 9 else None  # CPU time as rough proxy
+        result[key] = {
+            "label": info["label"],
+            "running": running,
+            "pid": pid,
+            "cpu_time": uptime_str,
+        }
+
+    # Server time
+    now_utc = datetime.utcnow()
+    hour_utc = now_utc.hour
+    outreach_window = 8 <= hour_utc <= 23
+
+    return {
+        "services": result,
+        "server_time_utc": now_utc.isoformat(),
+        "outreach_window_active": outreach_window,
+    }
+
+# ─────────────────────────────────────────────
+# VACANCIES STATS
+# ─────────────────────────────────────────────
+
+@app.get("/api/vacancies/stats")
+async def get_vacancies_stats():
+    """Статистика лидов из vacancies.db."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        # All time by status
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) FROM vacancies GROUP BY status ORDER BY 2 DESC"
+        )
+        by_status = {r[0]: r[1] for r in await cursor.fetchall()}
+
+        # Last 24h
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) FROM vacancies "
+            "WHERE last_seen > datetime('now', '-1 day') GROUP BY status ORDER BY 2 DESC"
+        )
+        last_24h = {r[0]: r[1] for r in await cursor.fetchall()}
+
+        # Queue: accepted + NULL/empty response
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM vacancies "
+            "WHERE status='accepted' AND (response IS NULL OR response = '')"
+        )
+        queue_count = (await cursor.fetchone())[0]
+
+        # Notified (stuck)
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM vacancies "
+            "WHERE status='accepted' AND response='notified'"
+        )
+        notified_count = (await cursor.fetchone())[0]
+
+        # Sent
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE response='sent'"
+        )
+        sent_count = (await cursor.fetchone())[0]
+
+        # no_contact
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE response='no_contact_skip'"
+        )
+        no_contact = (await cursor.fetchone())[0]
+
+        # Rejected 24h
+        r24_rejected = last_24h.get("rejected", 0)
+        r24_accepted  = last_24h.get("accepted", 0)
+        total_24h = r24_rejected + r24_accepted
+        acceptance_rate = round(r24_accepted / max(total_24h, 1) * 100, 1)
+
+    return {
+        "by_status": by_status,
+        "last_24h": last_24h,
+        "queue_pending": queue_count,
+        "notified_stuck": notified_count,
+        "sent_total": sent_count,
+        "no_contact_total": no_contact,
+        "acceptance_rate_24h": acceptance_rate,
+        "total_24h": total_24h,
+    }
+
+# ─────────────────────────────────────────────
+# QUEUE — список лидов в очереди
+# ─────────────────────────────────────────────
+
+@app.get("/api/vacancies/queue")
+async def get_queue(limit: int = Query(50, le=200)):
+    """Лиды в очереди на отправку (accepted + пустой response)."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT id, hash, direction, contact_link, text, draft_response,
+                   response, last_seen, tier, priority
+            FROM vacancies
+            WHERE status='accepted' AND (response IS NULL OR response = '')
+            ORDER BY last_seen DESC
+            LIMIT ?
+        """, (limit,))
+        rows = await cursor.fetchall()
+
+    leads = []
+    for r in rows:
+        leads.append({
+            "id": r["id"],
+            "hash": (r["hash"] or "")[:12],
+            "direction": r["direction"],
+            "contact": r["contact_link"],
+            "text_preview": (r["text"] or "")[:150],
+            "has_draft": bool(r["draft_response"]),
+            "draft_preview": (r["draft_response"] or "")[:200],
+            "response": r["response"],
+            "last_seen": r["last_seen"],
+            "tier": r["tier"],
+            "priority": r["priority"],
+        })
+    return {"leads": leads, "total": len(leads)}
+
+# ─────────────────────────────────────────────
+# ACCEPTED — все квалифицированные лиды
+# ─────────────────────────────────────────────
+
+@app.get("/api/vacancies/accepted")
+async def get_accepted_leads(
+    limit: int = Query(100, le=1000),
+    offset: int = 0,
+    search: Optional[str] = None
+):
+    """Все квалифицированные лиды (status='accepted')."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        
+        query = "SELECT id, hash, direction, contact_link, text, response, last_seen, tier, priority FROM vacancies WHERE status='accepted'"
+        params = []
+        
+        if search:
+            query += " AND (text LIKE ? OR direction LIKE ?)"
+            params.extend([f"%{search}%", f"%{search}%"])
+            
+        query += " ORDER BY last_seen DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        # Count total for pagination
+        count_query = "SELECT COUNT(*) FROM vacancies WHERE status='accepted'"
+        count_params = []
+        if search:
+            count_query += " AND (text LIKE ? OR direction LIKE ?)"
+            count_params.extend([f"%{search}%", f"%{search}%"])
+        
+        count_cursor = await db.execute(count_query, count_params)
+        total_count = (await count_cursor.fetchone())[0]
+
+    leads = []
+    for r in rows:
+        leads.append({
+            "id": r["id"],
+            "hash": (r["hash"] or "")[:12],
+            "direction": r["direction"],
+            "contact": r["contact_link"],
+            "text": r["text"],
+            "response": r["response"] or "Ожидает",
+            "last_seen": r["last_seen"],
+            "tier": r["tier"],
+            "priority": r["priority"],
+        })
+    return {"leads": leads, "total": total_count, "limit": limit, "offset": offset}
+
+# ─────────────────────────────────────────────
+# RESET QUEUE — сброс зависших лидов
+# ─────────────────────────────────────────────
+
+@app.post("/api/vacancies/reset-queue")
+async def reset_stuck_queue():
+    """Сбросить зависшие лиды (notified + текст в response) → NULL."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("""
+            UPDATE vacancies SET response = NULL
+            WHERE status='accepted' AND (
+                response = 'notified'
+                OR (response IS NOT NULL AND response != ''
+                    AND response NOT IN ('sent','failed','skipped_duplicate','no_contact_skip','SKIPPED'))
+            )
+        """)
+        await db.commit()
+        count = cursor.rowcount
+
+    return {"reset_count": count, "message": f"Сброшено {count} лидов в очередь"}
+
+# ─────────────────────────────────────────────
+# LOGS
+# ─────────────────────────────────────────────
+
+@app.get("/api/logs/tail")
+async def tail_log(
+    log: str = Query("alexey", enum=["alexey", "gwen", "parser", "joiner"]),
+    n: int = Query(100, le=500)
+):
+    """Последние N строк выбранного лога."""
+    log_path = LOG_FILES.get(log)
+    if not log_path or not log_path.exists():
+        return {"lines": [], "error": f"Лог {log} не найден: {log_path}"}
+
+    try:
+        result = subprocess.run(
+            ["tail", "-n", str(n), str(log_path)],
+            capture_output=True, text=True, timeout=5
+        )
+        lines = result.stdout.splitlines()
+    except Exception as e:
+        return {"lines": [], "error": str(e)}
+
+    return {"log": log, "lines": lines, "count": len(lines)}
+
+# ─────────────────────────────────────────────
+# CONTROLS
+# ─────────────────────────────────────────────
+
+@app.post("/api/controls/restart")
+async def restart_service(service: str = Query("alexey", enum=["alexey"])):
+    """Перезапустить сервис через systemctl."""
+    unit_map = {"alexey": "alexey-bot"}
+    unit = unit_map.get(service)
+    if not unit:
+        raise HTTPException(status_code=400, detail="Неизвестный сервис")
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", unit],
+            capture_output=True, text=True, timeout=15
+        )
+        success = result.returncode == 0
+        return {
+            "success": success,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "message": "Перезапущен" if success else "Ошибка перезапуска"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/server/info")
+async def get_server_info():
+    """Базовая информация о сервере."""
+    try:
+        uptime = subprocess.run(["uptime", "-p"], capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception:
+        uptime = "н/д"
+
+    try:
+        disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True, timeout=3).stdout
+        disk_lines = disk.strip().splitlines()
+        disk_info = disk_lines[1] if len(disk_lines) > 1 else "н/д"
+    except Exception:
+        disk_info = "н/д"
+
+    try:
+        mem = subprocess.run(["free", "-h"], capture_output=True, text=True, timeout=3).stdout
+        mem_lines = mem.strip().splitlines()
+        mem_info = mem_lines[1] if len(mem_lines) > 1 else "н/д"
+    except Exception:
+        mem_info = "н/д"
+
+    return {
+        "uptime": uptime,
+        "disk": disk_info,
+        "memory": mem_info,
+        "server_ip": "31.128.37.161",
+        "project_path": "/opt/harmonic-trifid/Harmonic-Trifid_Evgen",
+        "server_time_utc": datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────────
+# LEGACY — оставляем совместимость
+# ─────────────────────────────────────────────
+
 @app.get("/api/stats")
 async def get_stats():
-    """Общая статистика системы."""
-    async with aiosqlite.connect(settings.VACANCY_DB_PATH) as db:
+    """Общая статистика (legacy miniapp)."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
         cursor = await db.execute("SELECT COUNT(*) FROM vacancies")
         total_leads = (await cursor.fetchone())[0]
-        
+
         cursor = await db.execute("SELECT COUNT(*) FROM vacancies WHERE tier = 'HOT'")
         hot_leads = (await cursor.fetchone())[0]
-        
-        yesterday = (datetime.now() - timedelta(days=1)).timestamp()
+
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM vacancies WHERE timestamp > ?", (yesterday,)
+            "SELECT COUNT(*) FROM vacancies WHERE last_seen > datetime('now', '-1 day')"
         )
         leads_24h = (await cursor.fetchone())[0]
-        
-        cursor = await db.execute("SELECT COUNT(*) FROM outreach_attempts")
+
+        cursor = await db.execute("SELECT COUNT(*) FROM vacancies WHERE response='sent'")
         outreach_sent = (await cursor.fetchone())[0]
-        
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM outreach_attempts WHERE client_replied = 1"
-        )
-        replies = (await cursor.fetchone())[0]
-        reply_rate = (replies / max(outreach_sent, 1)) * 100
-    
+
     return {
         "total_leads": total_leads,
         "hot_leads": hot_leads,
         "leads_24h": leads_24h,
         "outreach_sent": outreach_sent,
-        "reply_rate": round(reply_rate, 1)
+        "reply_rate": 0.0,
     }
 
-@app.get("/api/leads/hot")
-async def get_hot_leads(limit: int = 20):
-    """Получить HOT-лиды."""
-    async with aiosqlite.connect(settings.VACANCY_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("""
-            SELECT id, text, priority, tier, timestamp
-            FROM vacancies
-            WHERE tier = 'HOT'
-            ORDER BY priority DESC, timestamp DESC
-            LIMIT ?
-        """, (limit,))
-        rows = await cursor.fetchall()
-        
-        leads = []
-        for row in rows:
-            text = row['text'] or ""
-            leads.append({
-                "id": row['id'],
-                "text": text[:200] + "..." if len(text) > 200 else text,
-                "priority": row['priority'] or 0,
-                "tier": row['tier']
-            })
-    
-    return {"leads": leads}
+# ─────────────────────────────────────────────
+# Static files & SPA
+# ─────────────────────────────────────────────
 
-@app.post("/api/outreach/generate")
-async def generate_outreach(lead_id: int):
-    """Сгенерировать отклик для лида."""
-    from systems.alexey.alexey_engine_rl import alexey_rl
-    
-    async with aiosqlite.connect(settings.VACANCY_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM vacancies WHERE id = ?", (lead_id,))
-        row = await cursor.fetchone()
-        
-        if not row:
-            raise HTTPException(status_code=404, detail="Lead not found")
-        
-        lead_data = dict(row)
-    
-    result = await alexey_rl.generate_outreach_with_rl(lead_data)
-    return result
-
-@app.post("/api/feedback/reply")
-async def record_reply(feedback: FeedbackRequest):
-    """Зафиксировать ответ клиента."""
-    await rl_agent.update_feedback(
-        outreach_id=feedback.outreach_id,
-        client_replied=feedback.client_replied,
-        reply_time_seconds=feedback.reply_time_seconds
-    )
-    return {"status": "ok"}
-
-@app.post("/api/feedback/deal")
-async def record_deal(deal: DealUpdateRequest):
-    """Зафиксировать результат сделки."""
-    await rl_agent.update_feedback(
-        outreach_id=deal.outreach_id,
-        client_replied=True,
-        conversation_length=deal.conversation_length,
-        deal_closed=deal.deal_closed,
-        deal_amount=deal.deal_amount
-    )
-    return {"status": "ok"}
-
-@app.get("/api/rl/performance")
-async def get_rl_performance():
-    """Отчет о производительности RL стратегий."""
-    report = await rl_agent.get_performance_report()
-    return report
-
-# Static files
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    """Главная страница Mini App."""
     html_path = static_dir / "index.html"
     if html_path.exists():
         return FileResponse(html_path)
-    return HTMLResponse("<h1>Mini App Frontend - создается...</h1>")
+    return HTMLResponse("<h1>Dashboard not found</h1>")
 
 if __name__ == "__main__":
     import uvicorn

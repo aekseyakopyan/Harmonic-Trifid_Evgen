@@ -139,9 +139,9 @@ async def main():
     
     await client.start()
     
-    # Initialize and start Gwen Commander
+    # Initialize and start Gwen Commander (Orchestration only, bot is handled in systems/gwen/bot.py)
     gwen_commander = GwenCommander(client)
-    await gwen_commander.start()
+    await gwen_commander.start(start_bot=False)
     
     me = await client.get_me()
     logger.info(f"Logged in as: {me.first_name} (@{me.username})")

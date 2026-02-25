@@ -58,7 +58,21 @@ async def get_parser_status():
             )
             errors_result = await session.execute(errors_stmt)
             errors_count = errors_result.scalar() or 0
-            
+
+        # Считаем лиды в обработке (из vacancies.db через aiosqlite)
+        import aiosqlite
+        import traceback
+        vacancies_needs_review = 0
+        try:
+            async with aiosqlite.connect(str(settings.VACANCY_DB_PATH)) as db_conn:
+                async with db_conn.execute("SELECT COUNT(*) FROM vacancies WHERE needs_review = 1") as cursor:
+                    row = await cursor.fetchone()
+                    vacancies_needs_review = row[0] if row else 0
+        except Exception as e:
+            print(f"Error counting needs_review vacancies: {e}")
+            traceback.print_exc()
+
+        async with async_session() as session:
             # Последний запуск (последнее исходящее сообщение с outreach)
             last_run_stmt = select(MessageLog.created_at).where(
                 MessageLog.intent == 'outreach',
@@ -107,6 +121,7 @@ async def get_parser_status():
             "stats": {
                 "vacancies_found_today": vacancies_found,
                 "responses_sent_today": responses_sent,
+                "vacancies_needs_review": vacancies_needs_review,
                 "errors_today": errors_count,
                 "last_run": last_run.isoformat() if last_run else None,
                 "success_rate": round((responses_sent / vacancies_found * 100) if vacancies_found > 0 else 0, 1)
@@ -155,4 +170,30 @@ async def toggle_parser(data: ParserToggleRequest):
         }
         
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/processing")
+async def get_processing_vacancies():
+    """Get list of vacancies currently in review (Active Learning batch)"""
+    import aiosqlite
+    import traceback
+    try:
+        async with aiosqlite.connect(str(settings.VACANCY_DB_PATH)) as db_conn:
+            db_conn.row_factory = aiosqlite.Row
+            async with db_conn.execute(
+                "SELECT id, text, source, direction, informativeness_score, last_seen "
+                "FROM vacancies WHERE needs_review = 1 ORDER BY last_seen DESC LIMIT 50"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                
+                return [{
+                    "id": row["id"],
+                    "content": row["text"][:150] + "..." if len(row["text"]) > 150 else row["text"],
+                    "source": row["source"],
+                    "direction": row["direction"] or "Unknown",
+                    "found_at": row["last_seen"],
+                    "informativeness": round(row["informativeness_score"] or 0, 3)
+                } for row in rows]
+    except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

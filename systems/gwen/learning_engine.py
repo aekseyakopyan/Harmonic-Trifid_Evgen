@@ -14,7 +14,7 @@ class GwenLearningEngine:
     """
     
     def __init__(self):
-        self.db_path = "vacancies.db"
+        self.db_path = str(settings.VACANCY_DB_PATH)
         self.filters_path = os.path.join(settings.BASE_DIR, "core/config/dynamic_filters.json")
 
     async def run_learning_session(self) -> Dict:

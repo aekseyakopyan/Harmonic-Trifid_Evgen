@@ -17,13 +17,14 @@ sys.path.append(os.getcwd())
 
 from systems.parser.vacancy_analyzer.scorer import VacancyScorer
 from systems.parser.vacancy_analyzer.contact_extractor import ContactExtractor
+from systems.parser.vacancy_db import VacancyDatabase
 from core.config.settings import settings
 
 # Загрузка переменных окружения
 load_dotenv()
 
 class TelegramHistoryParser:
-    """Парсер вакансий из Telegram за исторический период (2 года)"""
+    """Парсер вакансий из Telegram за исторический период (2024+)"""
     
     def __init__(self):
         self.api_id = settings.TELEGRAM_API_ID
@@ -33,17 +34,16 @@ class TelegramHistoryParser:
             session_str = f.read().strip()
         self.session = StringSession(session_str)
         
-        self.scorer = VacancyScorer()
-        self.contact_extractor = ContactExtractor()
+        # Новый фильтр Гвен
+        from systems.parser.lead_filter_advanced import LeadFilterAdvanced
+        self.lead_filter = LeadFilterAdvanced()
         
-        # Границы поиска (2 года назад от сегодня)
-        self.start_date = datetime(2026, 2, 8, tzinfo=timezone.utc)
-        self.stop_date = datetime(2024, 2, 8, tzinfo=timezone.utc)
+        # Границы поиска (с 2024 года)
+        self.start_date = datetime.now(timezone.utc)
+        self.stop_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
         
-        # Пути к базам данных
-        self.raw_db_path = "data/db/history_raw_messages.db"
-        self.leads_db_path = "data/db/history_buyer_leads.db"
-        self._init_databases()
+        # Основная база данных
+        self.db = VacancyDatabase()
 
         self.client = None
         self.seen_messages = set() # Дедупликация в рамках сессии
@@ -89,7 +89,8 @@ class TelegramHistoryParser:
     async def initialize(self):
         self.client = TelegramClient(self.session, self.api_id, self.api_hash)
         await self.client.start()
-        print("✅ Машина времени подключена (HISTORY_SESSION)")
+        await self.db.init_db()
+        print("✅ Машина времени подключена (UNIFIED_DB)")
     
     async def parse_history(self):
         await self.initialize()
@@ -140,35 +141,44 @@ class TelegramHistoryParser:
         print(f"\n🏁 Финиш! Просканировано: {self.stats['total_messages']}, Найдено лидов: {self.stats['total_leads']}")
 
     def _get_hash(self, text):
-        return hashlib.md5(text.encode('utf-8')).hexdigest()
+        import hashlib
+        clean_text = "".join(text.lower().split())
+        return hashlib.md5(clean_text.encode()).hexdigest()
 
     async def _process_message(self, message, chat_name):
         text = message.text
-        msg_hash = self._get_hash(text)
+        if not text: return
         
-        # 1. В RAW базу (все)
-        try:
-            with sqlite3.connect(self.raw_db_path) as conn:
-                conn.execute('INSERT OR IGNORE INTO raw_messages (chat_name, message_id, date, text, hash) VALUES (?,?,?,?,?)',
-                             (chat_name, message.id, message.date.isoformat(), text, msg_hash))
-        except Exception:
-            pass
+        # 1. Проверяем, был ли пост уже обработан
+        if await self.db.is_processed(text):
+            return
 
-        # 2. Анализ на лида
-        if msg_hash in self.seen_messages: return
-        self.seen_messages.add(msg_hash)
+        # 2. Анализ через LeadFilterAdvanced (LLM + BERT)
+        result = await self.lead_filter.analyze(text, message_id=message.id, chat_id=message.chat_id, source=chat_name)
         
-        analysis = self.scorer.analyze_message(text, message.date)
-        if analysis['is_vacancy']:
+        if result['is_lead']:
             self.stats['total_leads'] += 1
-            contact = self.contact_extractor.extract_contact({'text': text})
+            direction = result.get('specialization', 'Unknown')
+            contact_link = result.get('entities', {}).get('contact', {}).get('contact_link')
             
-            with sqlite3.connect(self.leads_db_path) as conn:
-                conn.execute('''
-                    INSERT OR IGNORE INTO history_leads (source, direction, text, contact_link, date, found_at, score, hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (chat_name, analysis.get('specialization'), text, contact.get('contact_link'), 
-                      message.date.isoformat(), datetime.now().isoformat(), analysis['relevance_score'], msg_hash))
+            # Сохраняем в основную базу
+            # Статус 'accepted', но response=None, чтобы outreach_generator увидел и подготовил черновик
+            await self.db.add_accepted(
+                text=text,
+                source=chat_name,
+                direction=direction,
+                contact_link=contact_link,
+                date=message.date.isoformat()
+            )
+            print(f"   ✨ Нашелся исторический лид! ({chat_name}, {message.date.date()}) -> {direction}")
+        else:
+            # Опционально сохраняем в rejected, чтобы не анализировать повторно
+            await self.db.add_rejected(
+                text=text,
+                source=chat_name,
+                reason=result.get('reason', 'Historical Reject'),
+                date=message.date.isoformat()
+            )
 
 async def main():
     parser = TelegramHistoryParser()

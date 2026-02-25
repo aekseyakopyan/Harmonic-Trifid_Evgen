@@ -5,24 +5,26 @@ Gwen Commander - Интерфейс команд для Мамы системы 
 import asyncio
 import re
 import os
-from datetime import datetime, timedelta
-from telethon import TelegramClient, events, functions
-from sqlalchemy import select, func, distinct
+import random
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from telethon import TelegramClient, events, functions, errors
+from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
 from core.database.models import MessageLog, Lead
 from core.config.settings import settings
 from core.utils.logger import logger
 from core.utils.health import health_monitor
 from systems.gwen.gwen_supervisor import gwen_supervisor
-import random
-from telethon import errors
+from systems.parser.duplicate_detector import get_duplicate_detector
 
 class GwenCommander:
     """
     Командный центр Гвен. Работает через SUPERVISOR_BOT_TOKEN.
     """
     
-    def __init__(self, main_client: TelegramClient):
+    def __init__(self, main_client: TelegramClient, db_path: str = None):
+        self.db_path = db_path or str(settings.VACANCY_DB_PATH)
         self.bot_token = settings.SUPERVISOR_BOT_TOKEN
         self.chat_id = settings.SUPERVISOR_CHAT_ID
         self.main_client = main_client # Основной юзербот для рассылок
@@ -30,41 +32,46 @@ class GwenCommander:
         self.enabled = bool(self.bot_token)
         self.waiting_for_reason = {} # user_id -> v_hash
         
-    async def start(self):
+    async def start(self, start_bot=True):
         """Запуск бота-командира."""
         if not self.enabled:
             logger.warning("Gwen Commander token missing. Command interface disabled.")
             return
 
         try:
-            self.bot_client = TelegramClient('gwen_commander', settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
-            await self.bot_client.start(bot_token=self.bot_token)
+            if start_bot:
+                self.bot_client = TelegramClient('gwen_commander', settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
+                await self.bot_client.start(bot_token=self.bot_token)
+                
+                # Регистрация обработчиков команд
+                self.bot_client.add_event_handler(self.handle_status, events.NewMessage(pattern='/status'))
+                self.bot_client.add_event_handler(self.handle_help, events.NewMessage(pattern='/start|/help'))
+                self.bot_client.add_event_handler(self.handle_stats, events.NewMessage(pattern='/stats'))
+                self.bot_client.add_event_handler(self.handle_outreach, events.NewMessage(pattern=r'/outreach\s+(\d+)ч\s+(.+)'))
+                
+                # Команды управления системой
+                self.bot_client.add_event_handler(self.handle_set_model, events.NewMessage(pattern=r'/set_model\s+(.+)'))
+                self.bot_client.add_event_handler(self.handle_task, events.NewMessage(pattern=r'/task\s+(.+)'))
+                
+                # Обработка всех остальных сообщений (текст и голос) как ИИ-чат или команды голосом
+                self.bot_client.add_event_handler(self.handle_chat_or_voice, events.NewMessage(incoming=True))
+                
+                # Кнопки для управления (Callback Query)
+                self.bot_client.add_event_handler(self.handle_callback, events.CallbackQuery())
+                
+                # Команды для обучения и расширения семантики
+                self.bot_client.add_event_handler(self.handle_learn_manual, events.NewMessage(pattern='/learn'))
+                self.bot_client.add_event_handler(self.handle_expand_manual, events.NewMessage(pattern='/expand'))
+                self.bot_client.add_event_handler(self.handle_spam, events.NewMessage(pattern=r'/spam(?:\s+(.+))?'))
+                
+                # Команда для отчетов
+                self.bot_client.add_event_handler(self.handle_report, events.NewMessage(pattern=r'/report(?:\s+(.+))?'))
+                
+                logger.info("🧠 Gwen Commander Bot interface is online.")
+            else:
+                logger.info("🧠 Gwen Commander starting in Orchestrator mode (tasks only).")
             
-            # Регистрация обработчиков команд
-            self.bot_client.add_event_handler(self.handle_status, events.NewMessage(pattern='/status'))
-            self.bot_client.add_event_handler(self.handle_help, events.NewMessage(pattern='/start|/help'))
-            self.bot_client.add_event_handler(self.handle_stats, events.NewMessage(pattern='/stats'))
-            self.bot_client.add_event_handler(self.handle_outreach, events.NewMessage(pattern=r'/outreach\s+(\d+)ч\s+(.+)'))
-            
-            # Команды управления системой
-            self.bot_client.add_event_handler(self.handle_set_model, events.NewMessage(pattern=r'/set_model\s+(.+)'))
-            self.bot_client.add_event_handler(self.handle_task, events.NewMessage(pattern=r'/task\s+(.+)'))
-            
-            # Обработка всех остальных сообщений (текст и голос) как ИИ-чат или команды голосом
-            self.bot_client.add_event_handler(self.handle_chat_or_voice, events.NewMessage(incoming=True))
-            
-            # Кнопки для управления (Callback Query)
-            self.bot_client.add_event_handler(self.handle_callback, events.CallbackQuery())
-            
-            # Команды для обучения и расширения семантики
-            self.bot_client.add_event_handler(self.handle_learn_manual, events.NewMessage(pattern='/learn'))
-            self.bot_client.add_event_handler(self.handle_expand_manual, events.NewMessage(pattern='/expand'))
-            self.bot_client.add_event_handler(self.handle_spam, events.NewMessage(pattern=r'/spam(?:\s+(.+))?'))
-            
-            # Команда для отчетов
-            self.bot_client.add_event_handler(self.handle_report, events.NewMessage(pattern=r'/report(?:\s+(.+))?'))
-            
-            # Фоновый мониторинг здоровья
+            # Фоновый мониторинг здоровья (ВСЕГДА ЗАПУСКАЕМ)
             self.service_states = {"database": True, "ollama": True, "openrouter": True}
             asyncio.create_task(self.health_check_loop())
             
@@ -77,7 +84,8 @@ class GwenCommander:
             # Фоновое самообучение фильтрам (раз в сутки в 2:00 МСК)
             asyncio.create_task(self._run_learning_loop())
             
-            logger.info("🧠 Gwen Commander is online and monitoring health.")
+        except Exception as e:
+            logger.error(f"Failed to start Gwen Commander: {e}")
             
         except Exception as e:
             logger.error(f"Failed to start Gwen Commander: {e}")
@@ -113,6 +121,9 @@ class GwenCommander:
         
         while True:
             try:
+                # DEBUG START
+                # logger.info(f"DEBUG: Gwen Loop Start. Auto: {settings.AUTO_OUTREACH}")
+                
                 # 1. Генерируем черновики для новых вакансий (те, что упали из парсера)
                 generated_count = await outreach_generator.process_new_vacancies()
                 if generated_count > 0:
@@ -121,7 +132,7 @@ class GwenCommander:
                 # 0. Проверка: не ждет ли уже отправленный лид ответа от человека?
                 # Если AUTO_OUTREACH выключен, мы работаем в режиме "по одному лиду на подтверждение"
                 if not settings.AUTO_OUTREACH:
-                    conn = sqlite3.connect("vacancies.db")
+                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                     cursor = conn.cursor()
                     cursor.execute("SELECT COUNT(*) FROM vacancies WHERE response = 'notified'")
                     pending_count = cursor.fetchone()[0]
@@ -129,7 +140,7 @@ class GwenCommander:
                     
                     if pending_count > 0:
                         # Проверяем, не завис ли лид (таймаут 1 час)
-                        conn = sqlite3.connect("vacancies.db")
+                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                         cursor = conn.cursor()
                         # Ищем лиды, которые висят в 'notified' слишком долго (к сожалению, у нас нет времени изменения статуса, 
                         # поэтому пока просто считаем: если лид висит, мы его НЕ трогаем, но можно добавить кнопку 'сброс').
@@ -145,11 +156,11 @@ class GwenCommander:
                         continue
 
                 # 2. Находим вакансии, о которых еще не уведомляли
-                conn = sqlite3.connect("vacancies.db")
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT hash, text, direction, source, contact_link, draft_response, last_seen
+                    SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority
                     FROM vacancies 
                     WHERE status = 'accepted' AND (response IS NULL OR response = "")
                     ORDER BY last_seen ASC LIMIT 1
@@ -162,6 +173,18 @@ class GwenCommander:
                     v_hash = v_dict['hash']
                     v_draft = v_dict['draft_response']
                     v_contact = v_dict['contact_link']
+                    v_tier = v_dict['tier'] or 'COLD'
+                    v_priority = v_dict['priority'] or 0
+                    
+                    # БЛОКиРОВКА: лиды без контакта бесполезны — нечего отправлять
+                    if not v_contact or v_contact == "Не найден":
+                        logger.info(f"⏭ Пропуск лида без контакта: {v_hash[:8]}...")
+                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
+                        conn.commit()
+                        conn.close()
+                        continue
                     
                     # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00)
                     cur_hour = datetime.now().hour
@@ -171,18 +194,110 @@ class GwenCommander:
 
                     if settings.AUTO_OUTREACH and v_contact and v_draft:
                         try:
-                            logger.info(f"🚀 Гвен автоматически отправляет отклик в {v_contact}")
                             target = v_contact.split('/')[-1].replace('@', '').strip()
                             
-                            await self.main_client.send_message(target, v_draft)
+                            # ПРОВЕРКА НА ДУБЛИКАТЫ В ЧАТЕ (Схожесть с прошлыми откликами)
+                            is_duplicate = False
+                            try:
+                                async with async_session() as session:
+                                    # Получаем сущность для ID (нужно для MessageLog)
+                                    entity = await self.main_client.get_entity(target)
+                                    entity_id = entity.id
+                                    
+                                    # Ищем лид и его историю сообщений
+                                    stmt = select(Lead).where(Lead.telegram_id == entity_id)
+                                    res = await session.execute(stmt)
+                                    lead = res.scalars().first()
+                                    
+                                    if lead:
+                                        # Берем последние 10 исходящих сообщений с типом outreach
+                                        stmt_msgs = select(MessageLog).where(
+                                            MessageLog.lead_id == lead.id,
+                                            MessageLog.direction == "outgoing",
+                                            MessageLog.intent == "outreach"
+                                        ).order_by(MessageLog.created_at.desc()).limit(10)
+                                        res_msgs = await session.execute(stmt_msgs)
+                                        past_messages = res_msgs.scalars().all()
+                                        
+                                        if past_messages:
+                                            detector = get_duplicate_detector()
+                                            for past_msg in past_messages:
+                                                similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
+                                                if similarity > 0.85:
+                                                    logger.info(f"⏭ Пропуск дубликата: Отклик в {target} слишком похож на предыдущий (sim={similarity:.2f})")
+                                                    is_duplicate = True
+                                                    break
+                            except Exception as check_err:
+                                logger.error(f"Error during duplicate outreach check: {check_err}")
+
+                            if is_duplicate:
+                                # Помечаем как пропущенный дубликат
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE vacancies SET response = 'skipped_duplicate' WHERE hash = ?", (v_hash,))
+                                conn.commit()
+                                conn.close()
+                                continue
+
+                            logger.info(f"🚀 Гвен автоматически отправляет отклик в {v_contact}")
+                            sent_msg = await self.main_client.send_message(target, v_draft)
                             
                             # Успешная отправка
-                            conn = sqlite3.connect("vacancies.db")
+                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                             cursor = conn.cursor()
                             cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                             conn.commit()
                             conn.close()
                             
+                            # ЛОГИРОВАНИЕ В ОСНОВНУЮ БД (для Дашборда)
+                            try:
+                                async with async_session() as session:
+                                    # Получаем сущность для ID (нужно для MessageLog)
+                                    entity = await self.main_client.get_entity(target)
+                                    entity_id = entity.id
+                                    
+                                    # Ищем или создаем лид
+                                    stmt = select(Lead).where(Lead.telegram_id == entity_id)
+                                    res = await session.execute(stmt)
+                                    lead = res.scalars().first()
+                                    
+                                    now = datetime.utcnow()
+                                    if not lead:
+                                        lead = Lead(
+                                            telegram_id=entity_id,
+                                            username=target if not target.isdigit() else None,
+                                            full_name=getattr(entity, 'first_name', target),
+                                            tier=v_tier,
+                                            priority=v_priority,
+                                            last_interaction=now,
+                                            last_outreach_at=now
+                                        )
+                                        session.add(lead)
+                                    else:
+                                        lead.tier = v_tier
+                                        lead.priority = max(lead.priority, v_priority)
+                                        lead.last_interaction = now
+                                        lead.last_outreach_at = now
+                                    
+                                    await session.commit()
+                                    await session.refresh(lead)
+                                    
+                                    # Записываем сообщение в лог
+                                    msg_log = MessageLog(
+                                        lead_id=lead.id,
+                                        direction="outgoing",
+                                        content=v_draft,
+                                        status="sent",
+                                        telegram_msg_id=sent_msg.id if sent_msg else None,
+                                        intent="outreach"
+                                    )
+                                    session.add(msg_log)
+                                    await session.commit()
+                                    logger.info(f"✅ Auto-outreach logged for dashboard: {target}")
+                                    
+                            except Exception as db_err:
+                                logger.error(f"Failed to log auto-outreach to bot_data.db: {db_err}")
+
                             v_dict['status_message'] = "✅ ОТПРАВЛЕНО АВТОМАТИЧЕСКИ"
                             await supervisor_notifier.notify_new_vacancy(v_dict)
                             
@@ -225,6 +340,15 @@ class GwenCommander:
 
                         except Exception as e:
                             logger.error(f"Auto-outreach failed for {v_contact}: {e}")
+                            # Помечаем лид как failed чтобы не зациклиться
+                            try:
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE vacancies SET response = 'failed' WHERE hash = ?", (v_hash,))
+                                conn.commit()
+                                conn.close()
+                            except Exception as db_err:
+                                logger.error(f"Failed to mark lead as failed: {db_err}")
                             v_dict['status_message'] = f"❌ ОШИБКА АВТО-ОТПРАВКИ: {str(e)}"
                             await supervisor_notifier.notify_new_vacancy(v_dict)
                     else:
@@ -232,21 +356,21 @@ class GwenCommander:
                         await supervisor_notifier.notify_new_vacancy(v_dict)
                         
                         # Помечаем как "уведомлен"
-                        conn = sqlite3.connect("vacancies.db")
+                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                         cursor = conn.cursor()
                         cursor.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
                         conn.commit()
                         conn.close()
                     
-                    # Потоковый режим (по 1 лиду): пауза 2-5 сек
-                    pause_time = random.randint(2, 5)
-                    logger.info(f"⏳ Следующий лид через {pause_time} сек...")
+                    # Потоковый режим (по 1 лиду): пауза около 1 минуты
+                    pause_time = random.randint(55, 65)
+                    logger.info(f"⏳ Следующий поиск лидов через {pause_time} сек...")
                     await asyncio.sleep(pause_time)
                     
             except Exception as e:
                 logger.error(f"Gwen outreach monitor error: {e}")
             
-            await asyncio.sleep(1) # Короткая пауза между проверками новых лидов
+            await asyncio.sleep(30) # Пауза между проверками новых лидов (30 сек)
 
     async def _run_learning_loop(self):
         """Периодическое обучение Гвен."""
@@ -421,10 +545,10 @@ class GwenCommander:
         text = event.message.message or ""
         
         # 0. Проверка: ждем ли мы комментарий к лиду?
-        if event.sender_id in getattr(self, 'waiting_for_reason', {}):
+        if event.sender_id in self.waiting_for_reason:
             v_hash = self.waiting_for_reason.pop(event.sender_id)
             import sqlite3
-            conn = sqlite3.connect("vacancies.db")
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
             cursor = conn.cursor()
             
             # Получаем текст вакансии для анализа
@@ -596,7 +720,7 @@ class GwenCommander:
             
             # 2. Статистика по парсеру (SQLite)
             import sqlite3
-            conn = sqlite3.connect("vacancies.db")
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
             cursor = conn.cursor()
             cursor.execute("SELECT status, COUNT(*) FROM vacancies GROUP BY status")
             v_stats = dict(cursor.fetchall())
@@ -682,7 +806,7 @@ class GwenCommander:
             from systems.gwen.learning_engine import gwen_learning_engine
             # Пытаемся найти текст сообщения в базе для анализа
             import sqlite3
-            conn = sqlite3.connect("vacancies.db")
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
             cursor = conn.cursor()
             cursor.execute("SELECT text FROM vacancies WHERE contact_link LIKE ? ORDER BY last_seen DESC LIMIT 1", (f'%{target}%',))
             row = cursor.fetchone()
@@ -723,7 +847,7 @@ class GwenCommander:
         
         if action in ["ignore", "block", "duplicate"]:
             import sqlite3
-            conn = sqlite3.connect("vacancies.db")
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
             cursor = conn.cursor()
             
             # Получаем данные вакансии
@@ -781,7 +905,7 @@ class GwenCommander:
         # Для Send и Edit нужна информация из БД
         import sqlite3
         try:
-            conn = sqlite3.connect("vacancies.db")
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
             cursor = conn.cursor()
             cursor.execute("SELECT text, draft_response, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
             vacancy = cursor.fetchone()
@@ -817,7 +941,7 @@ class GwenCommander:
             if not v_contact or v_contact == "Не найден":
                 await event.answer("⚠️ Контакт не найден.", alert=True)
                 # Помечаем как accepted, но без отправки
-                conn = sqlite3.connect("vacancies.db")
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute("UPDATE vacancies SET status = 'accepted', response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                 conn.commit()
@@ -862,7 +986,7 @@ class GwenCommander:
                         return
                     
                     # Сохраняем черновик
-                    conn = sqlite3.connect("vacancies.db")
+                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                     cursor = conn.cursor()
                     cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
                     conn.commit()
@@ -892,7 +1016,7 @@ class GwenCommander:
                 await event.edit(f"✅ <b>Отправлено в {v_contact}</b>\n🧐 <b>Анализ Гвен:</b> {analysis_reason}\n\n{v_draft}", parse_mode='html')
                 
                 # Помечаем в базе как отправленное
-                conn = sqlite3.connect("vacancies.db")
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                 conn.commit()

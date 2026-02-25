@@ -67,7 +67,8 @@ class BERTEntityExtractor:
 
         return {
             "budget": budget,
-            "deadline": {"date": None, "confidence": 0.0},
+            "deadline": {"urgency": None, "has_deadline": False, "confidence": 0.0},
+            "contact": {"emails": [], "phones": [], "telegram": [], "urls": [], "has_contact": False},
             "stack": [],
             "raw_entities": []
         }

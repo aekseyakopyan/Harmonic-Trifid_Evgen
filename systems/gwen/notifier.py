@@ -113,7 +113,7 @@ class SupervisorNotifier:
             is_dupe = False
             if contact_link and contact_link != "Не найден":
                 import sqlite3
-                conn = sqlite3.connect("vacancies.db")
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM vacancies WHERE contact_link = ? AND response IS NOT NULL AND response != '' AND hash != ?", (contact_link, v_hash))
                 if cursor.fetchone()[0] > 0:

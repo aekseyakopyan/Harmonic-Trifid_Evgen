@@ -151,7 +151,7 @@ def extract_entities_hybrid(text: str) -> Dict:
     regex_result = {
         "budget": extractor.extract_budget(text),
         "deadline": extractor.extract_deadline(text),
-        "contacts": extractor.extract_contact_info(text), # Changed to match regex usage
+        "contact": extractor.extract_contact_info(text),
         "niche": {"primary": "unknown", "confidence": 0.0},
         "method": "regex_fallback",
         "fallback_used": True,

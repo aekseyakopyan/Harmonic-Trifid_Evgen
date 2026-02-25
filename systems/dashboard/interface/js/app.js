@@ -1,5 +1,5 @@
 // API Base URL
-const API_URL = 'http://localhost:8000/api';
+const API_URL = '/api';
 
 // API fetch wrapper for consistent endpoint handling 
 async function apiFetch(endpoint, options = {}) {
@@ -467,6 +467,7 @@ async function updateParserStatus() {
         // Update metrics
         document.getElementById('parser-vacancies-found').textContent = data.stats.vacancies_found_today;
         document.getElementById('parser-responses-sent').textContent = data.stats.responses_sent_today;
+        document.getElementById('parser-vacancies-review').textContent = data.stats.vacancies_needs_review;
         document.getElementById('parser-success-rate').textContent = data.stats.success_rate + '%';
 
         const lastRun = data.stats.last_run ?
@@ -479,8 +480,9 @@ async function updateParserStatus() {
             'Никогда';
         document.getElementById('parser-last-run').textContent = lastRun;
 
-        // Update recent vacancies table
+        // Update tables
         updateVacanciesTable(data.recent_vacancies);
+        await updateProcessingTable();
 
     } catch (error) {
         console.error('Failed to load parser status:', error);
@@ -564,6 +566,53 @@ function getTimeAgo(date) {
     if (seconds < 3600) return `${Math.floor(seconds / 60)} мин назад`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)} ч назад`;
     return `${Math.floor(seconds / 86400)} дн назад`;
+}
+
+async function updateProcessingTable() {
+    const container = document.getElementById('processing-vacancies-container');
+
+    try {
+        const response = await apiFetch('/parser/processing');
+        const processing = await response.json();
+
+        if (!processing || processing.length === 0) {
+            container.innerHTML = '<p class="note">📭 Нет лидов на верификации</p>';
+            return;
+        }
+
+        let tableHTML = `
+            <table class="vacancy-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Направление</th>
+                        <th>Содержимое</th>
+                        <th>Информативность</th>
+                        <th>Время</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        processing.forEach((p, idx) => {
+            const timeAgo = getTimeAgo(new Date(p.found_at));
+
+            tableHTML += `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td><span class="vacancy-badge general">${p.direction}</span></td>
+                    <td>${p.content}</td>
+                    <td><strong>${p.informativeness}</strong></td>
+                    <td>${timeAgo}</td>
+                </tr>
+            `;
+        });
+
+        tableHTML += '</tbody></table>';
+        container.innerHTML = tableHTML;
+    } catch (error) {
+        console.error('Failed to update processing table:', error);
+    }
 }
 
 function showNotification(message, type = 'info') {

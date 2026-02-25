@@ -37,14 +37,18 @@ class OutreachGenerator:
 - Фокусируйся на специализации вакансии.
 """
 
-    def __init__(self, db_path: str = "vacancies.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or str(settings.VACANCY_DB_PATH)
 
-    async def generate_draft(self, vacancy_text: str, direction: str, is_old: bool = False) -> Optional[str]:
+    async def generate_draft(self, vacancy_text: str, direction: str, is_old: bool = False, is_followup: bool = False) -> Optional[str]:
         """Генерирует черновик отклика."""
-        logger.info(f"🎨 Генерирую черновик отклика (is_old={is_old}) для направления: {direction}")
+        logger.info(f"🎨 Генерирую черновик отклика (is_old={is_old}, is_followup={is_followup}) для направления: {direction}")
         
-        status_note = "ПРИМЕЧАНИЕ: Это старая вакансия. Обязательно начни с того, что человек искал специалиста ранее." if is_old else ""
+        status_note = ""
+        if is_followup:
+            status_note = "ПРИМЕЧАНИЕ: Это очень старая вакансия (из архива 2024-2025 гг). Начни сообщение строго с мысли: 'Ранее вы искали специалиста, подскажите, актуально ли в данный момент сотрудничество?'"
+        elif is_old:
+            status_note = "ПРИМЕЧАНИЕ: Это старая вакансия (больше 12 часов). Упомяни, что человек ранее искал специалиста."
         
         prompt = f"""
 {status_note}
@@ -106,31 +110,60 @@ class OutreachGenerator:
             is_valid = filter_result["is_lead"]
             
             if is_valid:
-                # Проверка на "старость"
+                # Проверка на "старость" и "follow-up"
                 is_old = False
+                is_followup = False
                 try:
                     dt = dateutil.parser.isoparse(last_seen)
                     if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-                    if (now - dt).total_seconds() > 43200: # 12 hours
+                    age_seconds = (now - dt).total_seconds()
+                    
+                    if age_seconds > 259200: # 3 days
+                        is_followup = True
+                    elif age_seconds > 43200: # 12 hours
                         is_old = True
                 except Exception:
                     pass
 
-                # Мы больше не генерируем черновики заранее для экономии ресурсов и упрощения процесса.
-                # Черновик будет сгенерирован только в момент клика на кнопку "Одобрить".
+                # Выделяем тир и приоритет
+                tier = filter_result.get("tier", "WARM")
+                priority = filter_result.get("priority", 50)
+
                 count += 1
-                # Помечаем как обработанную генератором, чтобы не попадать в этот цикл снова
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("UPDATE vacancies SET draft_response = 'SKIPPED' WHERE hash = ?", (v_hash,))
-                conn.commit()
-                conn.close()
+                # Генерируем реальный черновик через LLM
+                draft = await self.generate_draft(v_text, v_dir, is_old=is_old, is_followup=is_followup)
+                
+                if draft:
+                    # Сохраняем реальный черновик
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE vacancies SET draft_response = ?, tier = ?, priority = ? WHERE hash = ?", 
+                        (draft, tier, priority, v_hash)
+                    )
+                    conn.commit()
+                    conn.close()
+                    logger.info(f"✅ Черновик сгенерирован для {v_hash[:8]}... (tier={tier})")
+                else:
+                    # LLM недоступен — ставим SKIPPED как fallback
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE vacancies SET draft_response = 'SKIPPED', tier = ?, priority = ? WHERE hash = ?", 
+                        (tier, priority, v_hash)
+                    )
+                    conn.commit()
+                    conn.close()
+                    logger.warning(f"⚠️ LLM недоступен, черновик помечен как SKIPPED для {v_hash[:8]}...")
             else:
                 logger.warning(f"🚫 Гвен пометила вакансию как мусор/спам: {v_hash}")
                 # Помечаем как rejected, чтобы больше не обрабатывать
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
-                cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ? WHERE hash = ?", (filter_result.get("reason", "Advanced AI Filter Reject"), v_hash))
+                cursor.execute(
+                    "UPDATE vacancies SET status = 'rejected', rejection_reason = ?, tier = 'COLD', priority = 0 WHERE hash = ?", 
+                    (filter_result.get("reason", "Advanced AI Filter Reject"), v_hash)
+                )
                 conn.commit()
                 conn.close()
                 
