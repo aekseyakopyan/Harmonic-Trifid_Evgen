@@ -33,6 +33,31 @@
                 "mcp-server-sqlite-npx",
                 "/Users/set/.gemini/antigravity/playground/Evgeniy/data/db/history_buyer_leads.db"
             ]
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/set/.gemini/antigravity/playground/Evgeniy"
+            ]
+        },
+        "fetch": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-fetch"
+            ]
+        },
+        "github": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-github"
+            ],
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": "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"
+            }
         }
     },
     "contexts": {
