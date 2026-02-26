@@ -9,7 +9,6 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pyrogram import Client
-from pyrogram.types import MessageEntityTextUrl
 from dotenv import load_dotenv
 
 import sys
