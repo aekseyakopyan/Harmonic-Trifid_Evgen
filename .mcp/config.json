@@ -56,7 +56,7 @@
                 "@modelcontextprotocol/server-github"
             ],
             "env": {
-                "GITHUB_PERSONAL_ACCESS_TOKEN": "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"
+                "GITHUB_PERSONAL_ACCESS_TOKEN": "PLACEHOLDER"
             }
         }
     },
