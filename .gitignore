@@ -71,6 +71,9 @@ logs/
 *.db
 *.db-shm
 *.db-wal
+vacancies_*.json
+no_contact_leads.json
+leads_no_contact.xlsx
 
 # Ignore dynamic data/logs but keep config
 !core/config/*.json
@@ -82,3 +85,6 @@ logs/
 !TWA_GUIDE.md
 !docs/**/*.md
 !.agent/workflows/*.md
+
+# MCP config (contains API tokens)
+.mcp/config.json
