@@ -87,6 +87,33 @@
                     </div>
                 </div>
 
+                <!-- System Status -->
+                <div class="section">
+                    <h3>🖥️ Статус процессов</h3>
+                    <div id="system-status-grid" class="system-status-grid">
+                        <div class="status-process-card" id="proc-alexey">
+                            <span class="proc-indicator" id="proc-alexey-dot">⚪</span>
+                            <span class="proc-name">Alexey (userbot)</span>
+                            <span class="proc-status" id="proc-alexey-text">—</span>
+                        </div>
+                        <div class="status-process-card" id="proc-gwen">
+                            <span class="proc-indicator" id="proc-gwen-dot">⚪</span>
+                            <span class="proc-name">Gwen (supervisor)</span>
+                            <span class="proc-status" id="proc-gwen-text">—</span>
+                        </div>
+                        <div class="status-process-card" id="proc-parser">
+                            <span class="proc-indicator" id="proc-parser-dot">⚪</span>
+                            <span class="proc-name">Parser (today)</span>
+                            <span class="proc-status" id="proc-parser-text">—</span>
+                        </div>
+                        <div class="status-process-card" id="proc-miniapp">
+                            <span class="proc-indicator" id="proc-miniapp-dot">⚪</span>
+                            <span class="proc-name">Miniapp (API)</span>
+                            <span class="proc-status" id="proc-miniapp-text">—</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="section">
                     <h3>Недавняя активность</h3>
                     <div id="recent-activity" class="activity-list">
@@ -164,8 +191,11 @@
 
                 <div class="section">
                     <h3>System Prompt</h3>
-                    <textarea id="system-prompt" rows="20" class="prompt-editor" readonly>Загрузка...</textarea>
-                    <p class="note">💡 Для редактирования промпта измените файл config/prompts.py</p>
+                    <textarea id="system-prompt" rows="20" class="prompt-editor">Загрузка...</textarea>
+                    <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; align-items: center;">
+                        <button id="save-prompt-btn" class="btn-primary">💾 Сохранить промпт</button>
+                        <span id="prompt-save-status" class="save-status"></span>
+                    </div>
                 </div>
             </div>
 

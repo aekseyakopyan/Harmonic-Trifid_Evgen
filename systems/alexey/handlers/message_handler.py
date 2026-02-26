@@ -381,8 +381,19 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
                     import random
                     await asyncio.sleep(random.uniform(0.7, 1.8))
 
-        except (UserIsBlocked, FloodWait) as e:
-            logger.error(f"Error sending message: {e}")
+        except FloodWait as e:
+            wait_sec = e.value + 2
+            logger.warning(f"⏳ FloodWait {e.value}s — ожидаем {wait_sec}s и повторяем последний chunk...")
+            await asyncio.sleep(wait_sec)
+            try:
+                sent_msg = await client.send_message(chat_id, chunks[-1])
+                if sent_msg:
+                    handover_manager.mark_as_automated(sent_msg.id)
+            except Exception as retry_err:
+                logger.error(f"Повторная отправка после FloodWait не удалась: {retry_err}")
+                status = "failed"
+        except UserIsBlocked as e:
+            logger.error(f"❌ UserIsBlocked: {e}")
             status = "failed"
         except Exception as e:
             logger.error(f"Error sending message with humanity: {e}")

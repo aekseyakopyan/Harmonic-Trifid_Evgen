@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import subprocess
 from systems.dashboard.routes import dashboard, leads, cases, settings, services, parser
 
 app = FastAPI(title="Alexey Bot Dashboard", version="1.0.0")
@@ -35,6 +36,25 @@ app.include_router(parser.router, prefix="/api/parser", tags=["Parser"])
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "message": "Alexey Dashboard API is running"}
+
+
+@app.get("/api/system/status")
+async def system_status():
+    """Check if key bot processes are running via pgrep"""
+    processes = {
+        "alexey": "systems/alexey/main",
+        "gwen": "systems/gwen",
+        "parser": "apps/today_parser",
+        "miniapp": "miniapp/api",
+    }
+    status = {}
+    for name, pattern in processes.items():
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True
+        )
+        status[name] = "running" if result.returncode == 0 else "stopped"
+    return status
 
 @app.get("/twa")
 async def get_twa():

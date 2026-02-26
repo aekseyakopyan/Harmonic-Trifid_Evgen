@@ -10,12 +10,17 @@ async function apiFetch(endpoint, options = {}) {
 // Current view state
 let currentView = 'dashboard';
 let allLeads = [];
+let dashboardRefreshInterval = null;
+let systemStatusInterval = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     initializeNavigation();
     checkAPIStatus();
     loadDashboard();
+    // Start system status polling every 15 seconds
+    loadSystemStatus();
+    systemStatusInterval = setInterval(loadSystemStatus, 15000);
 });
 
 // Navigation
@@ -46,6 +51,11 @@ function switchView(view) {
     switch (view) {
         case 'dashboard':
             loadDashboard();
+            // Auto-refresh dashboard every 30 seconds when active
+            if (dashboardRefreshInterval) clearInterval(dashboardRefreshInterval);
+            dashboardRefreshInterval = setInterval(() => {
+                if (currentView === 'dashboard') loadDashboard();
+            }, 30000);
             break;
         case 'leads':
             loadLeads();
@@ -410,6 +420,38 @@ function formatDate(dateString) {
 }
 
 // ===================================
+// SYSTEM STATUS
+// ===================================
+
+async function loadSystemStatus() {
+    try {
+        const response = await apiFetch('/system/status');
+        if (!response.ok) return;
+        const data = await response.json();
+
+        const processMap = {
+            alexey: { dot: 'proc-alexey-dot', text: 'proc-alexey-text' },
+            gwen:   { dot: 'proc-gwen-dot',   text: 'proc-gwen-text' },
+            parser: { dot: 'proc-parser-dot',  text: 'proc-parser-text' },
+            miniapp:{ dot: 'proc-miniapp-dot', text: 'proc-miniapp-text' },
+        };
+
+        for (const [name, ids] of Object.entries(processMap)) {
+            const running = data[name] === 'running';
+            const dotEl = document.getElementById(ids.dot);
+            const textEl = document.getElementById(ids.text);
+            if (dotEl) dotEl.textContent = running ? '🟢' : '🔴';
+            if (textEl) {
+                textEl.textContent = running ? 'Запущен' : 'Остановлен';
+                textEl.className = 'proc-status ' + (running ? 'running' : 'stopped');
+            }
+        }
+    } catch (error) {
+        // Silently ignore — server may be unreachable
+    }
+}
+
+// ===================================
 // PARSER FUNCTIONS
 // ===================================
 
@@ -589,6 +631,7 @@ async function updateProcessingTable() {
                         <th>Содержимое</th>
                         <th>Информативность</th>
                         <th>Время</th>
+                        <th>Действие</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -598,12 +641,16 @@ async function updateProcessingTable() {
             const timeAgo = getTimeAgo(new Date(p.found_at));
 
             tableHTML += `
-                <tr>
+                <tr id="vacancy-row-${p.id}">
                     <td>${idx + 1}</td>
                     <td><span class="vacancy-badge general">${p.direction}</span></td>
                     <td>${p.content}</td>
                     <td><strong>${p.informativeness}</strong></td>
                     <td>${timeAgo}</td>
+                    <td>
+                        <button class="btn-approve" onclick="approveVacancy(${p.id})">✅</button>
+                        <button class="btn-reject" onclick="rejectVacancy(${p.id})">❌</button>
+                    </td>
                 </tr>
             `;
         });
@@ -616,7 +663,74 @@ async function updateProcessingTable() {
 }
 
 function showNotification(message, type = 'info') {
-    // Simple notification - you can enhance this
     console.log(`[${type.toUpperCase()}] ${message}`);
     alert(message);
+}
+
+// ===================================
+// VACANCY APPROVE / REJECT
+// ===================================
+
+async function approveVacancy(vacancyId) {
+    try {
+        const response = await apiFetch(`/parser/approve/${vacancyId}`, { method: 'POST' });
+        const data = await response.json();
+        if (data.success) {
+            const row = document.getElementById(`vacancy-row-${vacancyId}`);
+            if (row) row.remove();
+        }
+    } catch (error) {
+        console.error('Error approving vacancy:', error);
+    }
+}
+
+async function rejectVacancy(vacancyId) {
+    try {
+        const response = await apiFetch(`/parser/reject/${vacancyId}`, { method: 'POST' });
+        const data = await response.json();
+        if (data.success) {
+            const row = document.getElementById(`vacancy-row-${vacancyId}`);
+            if (row) row.remove();
+        }
+    } catch (error) {
+        console.error('Error rejecting vacancy:', error);
+    }
+}
+
+// ===================================
+// SYSTEM PROMPT SAVE
+// ===================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    const savePromptBtn = document.getElementById('save-prompt-btn');
+    if (savePromptBtn) {
+        savePromptBtn.addEventListener('click', saveSystemPrompt);
+    }
+});
+
+async function saveSystemPrompt() {
+    const statusEl = document.getElementById('prompt-save-status');
+    const prompt = document.getElementById('system-prompt').value;
+
+    statusEl.textContent = 'Сохранение...';
+    statusEl.className = 'save-status';
+
+    try {
+        const response = await apiFetch('/settings/prompt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt })
+        });
+
+        if (response.ok) {
+            statusEl.textContent = '✅ Промпт сохранён';
+            statusEl.classList.add('success');
+        } else {
+            throw new Error('Server error');
+        }
+    } catch (error) {
+        statusEl.textContent = '❌ Ошибка при сохранении';
+        statusEl.classList.add('error');
+        console.error('Error saving prompt:', error);
+    }
 }

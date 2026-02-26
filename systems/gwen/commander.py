@@ -180,7 +180,7 @@ class GwenCommander:
                     cur_hour = datetime.now().hour
                     if settings.AUTO_OUTREACH and not (8 <= cur_hour < 23):
                         logger.info(f"⏸ Вне рабочего времени ({cur_hour}:00). Авто-отклик отложен до 8:00.")
-                        break 
+                        continue
 
                     if settings.AUTO_OUTREACH and v_contact and v_draft:
                         try:

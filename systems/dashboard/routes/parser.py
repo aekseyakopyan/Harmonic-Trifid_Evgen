@@ -197,3 +197,35 @@ async def get_processing_vacancies():
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/approve/{vacancy_id}")
+async def approve_vacancy(vacancy_id: int):
+    """Approve vacancy: set status='accepted', needs_review=0 (Active Learning positive label)"""
+    import aiosqlite
+    try:
+        async with aiosqlite.connect(str(settings.VACANCY_DB_PATH)) as db:
+            await db.execute(
+                "UPDATE vacancies SET status='accepted', needs_review=0 WHERE id=?",
+                (vacancy_id,)
+            )
+            await db.commit()
+        return {"success": True, "action": "approved", "id": vacancy_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reject/{vacancy_id}")
+async def reject_vacancy(vacancy_id: int):
+    """Reject vacancy: set status='rejected', needs_review=0 (Active Learning negative label)"""
+    import aiosqlite
+    try:
+        async with aiosqlite.connect(str(settings.VACANCY_DB_PATH)) as db:
+            await db.execute(
+                "UPDATE vacancies SET status='rejected', needs_review=0 WHERE id=?",
+                (vacancy_id,)
+            )
+            await db.commit()
+        return {"success": True, "action": "rejected", "id": vacancy_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

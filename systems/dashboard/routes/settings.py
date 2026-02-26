@@ -7,10 +7,19 @@ from pathlib import Path
 
 router = APIRouter()
 
+DEFAULT_SYSTEM_PROMPT = (
+    "Ты — Алексей, B2B менеджер по продажам digital-агентства. "
+    "Ты профессионально общаешься с потенциальными клиентами, выявляешь потребности, "
+    "предлагаешь решения и назначаешь встречи. Стиль — дружелюбный, деловой, без лишних слов."
+)
+
 class OutreachSettings(BaseModel):
     enabled: bool
     test_mode: bool
     test_chat_id: Optional[int]
+
+class PromptRequest(BaseModel):
+    prompt: str
 
 @router.get("/outreach")
 async def get_outreach_settings():
@@ -65,5 +74,25 @@ async def update_outreach_settings(data: OutreachSettings):
         settings.OUTREACH_TEST_CHAT_ID = data.test_chat_id
         
         return {"message": "Settings updated and saved to .env"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/prompt")
+async def get_system_prompt():
+    """Get current system prompt"""
+    prompt_file = settings.DATA_DIR / "system_prompt.txt"
+    if prompt_file.exists():
+        return {"prompt": prompt_file.read_text(encoding="utf-8")}
+    return {"prompt": DEFAULT_SYSTEM_PROMPT}
+
+
+@router.post("/prompt")
+async def save_system_prompt(data: PromptRequest):
+    """Save system prompt to data/system_prompt.txt"""
+    try:
+        prompt_file = settings.DATA_DIR / "system_prompt.txt"
+        prompt_file.write_text(data.prompt, encoding="utf-8")
+        return {"message": "Системный промпт сохранён"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
