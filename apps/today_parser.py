@@ -9,6 +9,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pyrogram import Client
+from pyrogram.errors import FloodWait
 from dotenv import load_dotenv
 
 import sys
@@ -55,7 +56,8 @@ class TelegramVacancyParser:
                 api_hash=self.api_hash,
                 session_string=session_str,
                 in_memory=True,
-                no_updates=True  # Парсер не обрабатывает входящие события
+                no_updates=True,       # Парсер не обрабатывает входящие события
+                sleep_threshold=60,    # Автоматически ждёт до 60 сек при FloodWait
             )
         else:
             import os
@@ -65,7 +67,8 @@ class TelegramVacancyParser:
                 api_id=self.api_id,
                 api_hash=self.api_hash,
                 phone_number=getattr(settings, 'TELEGRAM_PHONE', None),
-                no_updates=True
+                no_updates=True,
+                sleep_threshold=60,
             )
         
         self.scorer = VacancyScorer()
@@ -77,7 +80,7 @@ class TelegramVacancyParser:
         self._contacted_today = set()
         self.db = VacancyDatabase()
         self.results = {
-            'parsed_at': datetime.now(timezone.utc).isoformat(),
+            'parsed_at': datetime.now().isoformat(),
             'total_messages_scanned': 0,
             'total_chats_scanned': 0,
             'relevant_vacancies': [],
@@ -111,21 +114,21 @@ class TelegramVacancyParser:
         print(f"🎯 Найдено подходящих источников (каналы, группы, боты): {len(target_dialogs)}\n")
         
         for i, dialog in enumerate(target_dialogs, 1):
-            chat_name = dialog.name or "Без названия"
+            chat_name = (dialog.chat.title or dialog.chat.first_name) if dialog.chat else "Без названия"
             print(f"[{i}/{len(target_dialogs)}] 🔍 Анализируем: {chat_name}")
             
             try:
-                # Временная граница
-                time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+                # Временная граница (делаем наивной для совместимости)
+                time_threshold = datetime.now() - timedelta(hours=hours_ago)
                 
                 messages_count = 0
-                # Лимит 100 сообщений на чат
-                async for message in self.client.iter_messages(dialog, limit=100):
-                    if not message.message:
+                async for message in self.client.get_chat_history(dialog.chat.id, limit=100):
+                    if not message.text:
                         continue
                     
-                    # Проверка времени
-                    if message.date < time_threshold:
+                    # Проверка времени (убеждаемся что оба naive)
+                    msg_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
+                    if msg_date < time_threshold:
                         break
                     
                     messages_count += 1
@@ -138,15 +141,25 @@ class TelegramVacancyParser:
                     print(f"   ✓ Обработано сообщений: {messages_count}")
                     # Помечаем чат как прочитанный, чтобы не копились уведомления
                     try:
-                        await self.client.send_read_acknowledge(dialog)
+                        await self.client.read_chat_history(dialog.chat.id)
                     except Exception as e:
                         print(f"   ⚠️ Не удалось пометить как прочитанное: {e}")
                     
+            except FloodWait as e:
+                print(f"   ⏳ FloodWait: ждём {e.value} сек перед следующим чатом...")
+                await asyncio.sleep(e.value + 3)
+            except (ConnectionError, BrokenPipeError) as e:
+                print(f"   🚨 Сетевая ошибка (socket/connection): {e}. Прерываем цикл для перезапуска.")
+                raise e
             except Exception as e:
+                error_str = str(e).lower()
+                if "socket" in error_str or "connection" in error_str or "broken pipe" in error_str:
+                    print(f"   🚨 Критическая сетевая ошибка обнаружена: {e}. Перезапуск...")
+                    raise e
                 print(f"   ❌ Ошибка при парсинге {chat_name}: {e}")
             
-            # Небольшая пауза
-            await asyncio.sleep(0.05)
+            # Пауза между чатами: 0.5 сек базово (защита от 429)
+            await asyncio.sleep(0.5)
         
         # Сортируем по приоритету
         self.results['relevant_vacancies'].sort(
@@ -167,7 +180,7 @@ class TelegramVacancyParser:
 
     async def _analyze_message(self, message, channel_name: str):
         """Анализирует одно сообщение"""
-        text = message.message
+        text = message.text or ""
         
         # Дедупликация по тексту (в рамках текущего запуска)
         msg_hash = self._get_message_hash(text)
@@ -184,21 +197,13 @@ class TelegramVacancyParser:
         
         print(f"      📡 Анализируем новое сообщение (длина: {len(text)})")
         
-        # Извлекаем кнопки если есть
+        # Извлекаем кнопки если есть (Pyrogram style)
         buttons_text = ""
-        if message.buttons:
+        if message.reply_markup and hasattr(message.reply_markup, "inline_keyboard"):
             buttons_text = "🔘 КНОПКИ:\n"
-            for row in message.buttons:
+            for row in message.reply_markup.inline_keyboard:
                 for button in row:
-                    # Проверяем все возможные атрибуты ссылки
-                    link = None
-                    if hasattr(button, 'url') and button.url:
-                        link = button.url
-                    elif hasattr(button, 'data') and button.data:
-                        # Инлайновые кнопки с данными обычно не содержат прямых ссылок, 
-                        # но мы можем пометить их наличие
-                        pass
-                    
+                    link = button.url if hasattr(button, "url") else None
                     if link:
                         buttons_text += f"• {button.text} → {link}\n"
                     else:
@@ -217,7 +222,7 @@ class TelegramVacancyParser:
                 'date': message.date.isoformat(),
                 'text': text[:500],  # Обрезаем для компактности
                 'full_text': text,
-                'sender_id': message.sender_id,
+                'sender_id': message.from_user.id if message.from_user else None,
                 'analysis': analysis,
                 'has_form': has_google_form
             }
@@ -225,35 +230,32 @@ class TelegramVacancyParser:
             if analysis['is_vacancy']:
                 # Получаем информацию о пересланном сообщении
                 fwd_from = None
-                if message.fwd_from:
-                    from_id = None
-                    if hasattr(message.fwd_from, 'from_id'):
-                        f_id = message.fwd_from.from_id
-                        if hasattr(f_id, 'user_id'):
-                            from_id = f_id.user_id
+                if message.forward_from:
+                    from_id = message.forward_from.id
                     
                     fwd_from = {
                         'from_id': from_id,
-                        'from_username': None,
-                        'channel_id': message.fwd_from.from_id.channel_id if hasattr(message.fwd_from, 'from_id') and hasattr(message.fwd_from.from_id, 'channel_id') else None
+                        'from_username': message.forward_from.username,
+                        'channel_id': None # В Pyrogram это forward_from_chat
+                    }
+                elif message.forward_from_chat:
+                    fwd_from = {
+                        'from_id': None,
+                        'from_username': message.forward_from_chat.username,
+                        'channel_id': message.forward_from_chat.id
                     }
                 
                 sender_username = None
                 sender_is_user = False
-                try:
-                    from telethon.tl.types import User
-                    sender = await message.get_sender()
-                    if sender and isinstance(sender, User) and hasattr(sender, 'username'):
-                        sender_username = sender.username
-                        sender_is_user = True
-                except:  
-                    pass
+                if message.from_user:
+                    sender_username = message.from_user.username
+                    sender_is_user = True
                 
                 # Извлекаем контакт
                 contact_data = self.contact_extractor.extract_contact({
                     'text': text,
                     'buttons': buttons_text,
-                    'sender_id': message.sender_id if sender_is_user else None,
+                    'sender_id': message.from_user.id if sender_is_user else None,
                     'fwd_from': fwd_from,
                     'sender_username': sender_username
                 })
@@ -339,16 +341,18 @@ class TelegramVacancyParser:
                 res = await session.execute(stmt)
                 lead = res.scalars().first()
                 
-                now = datetime.utcnow()
+                now = datetime.now()
                 
                 if lead:
-                    # Проверяем last_outreach_at (блокировка на 24 часа)
-                    if lead.last_outreach_at and (now - lead.last_outreach_at).total_seconds() < 86400:
+                    # Проверяем last_outreach_at (с приведением к naive)
+                    last_outreach = lead.last_outreach_at.replace(tzinfo=None) if lead.last_outreach_at and lead.last_outreach_at.tzinfo else lead.last_outreach_at
+                    if last_outreach and (now - last_outreach).total_seconds() < 86400:
                         print(f"   ⏭ Лид {contact_link} уже получил сообщение недавно (last_outreach_at), пропускаем")
                         return
                     
-                    # Если лид есть и было живое общение (last_interaction)
-                    if lead.last_interaction and (now - lead.last_interaction).total_seconds() < 86400:
+                    # Проверяем last_interaction (с приведением к naive)
+                    last_interaction = lead.last_interaction.replace(tzinfo=None) if lead.last_interaction and lead.last_interaction.tzinfo else lead.last_interaction
+                    if last_interaction and (now - last_interaction).total_seconds() < 86400:
                         print(f"   ⏭ Лид {contact_link} уже есть в базе и с ним было общение, пропускаем")
                         return
                     
@@ -405,8 +409,10 @@ class TelegramVacancyParser:
             # Собираем ID мониторируемых чатов для Стратегии 3 (поиск участников)
             chat_ids = []
             try:
-                dialogs = await self.client.get_dialogs(limit=200)
-                chat_ids = [d.id for d in dialogs if d.is_channel or d.is_group]
+                # В Pyrogram get_dialogs — это асинхронный генератор
+                async for dialog in self.client.get_dialogs(limit=200):
+                    if dialog.chat.type in (ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP):
+                        chat_ids.append(dialog.chat.id)
             except Exception:
                 pass
             
@@ -566,17 +572,18 @@ async def main():
     print(f"🚀 Запущен непрерывный мониторинг...")
     
     while True:
+        parser = None
         try:
             start_time = datetime.now()
             print(f"\n⏰ Новый цикл сканирования: {start_time.strftime('%H:%M:%S')}")
             
-            cycle_parser = TelegramVacancyParser()
-            await cycle_parser.parse_dialogs(hours_ago=24)
+            parser = TelegramVacancyParser()
+            await parser.parse_dialogs(hours_ago=24)
             
             today = datetime.now().strftime("%Y-%m-%d")
-            cycle_parser.save_results(f"vacancies_{today}_monitor.json")
-            cycle_parser.generate_markdown_report("report_today.md")
-            cycle_parser.generate_full_unfiltered_report("full_dump_today.md")
+            parser.save_results(f"vacancies_{today}_monitor.json")
+            await parser.generate_markdown_report("report_today.md")
+            parser.generate_full_unfiltered_report("full_dump_today.md")
             
             end_time = datetime.now()
             duration = end_time - start_time
@@ -586,6 +593,12 @@ async def main():
             
         except Exception as e:
             print(f"❌ Критическая ошибка в цикле: {e}")
+            if parser and hasattr(parser, 'client'):
+                try:
+                    await parser.client.stop()
+                except:
+                    pass
+            print("⏳ Ожидание 60 секунд перед полной перезагрузкой клиента...")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":

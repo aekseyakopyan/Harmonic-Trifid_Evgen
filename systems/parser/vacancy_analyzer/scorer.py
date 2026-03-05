@@ -3,8 +3,30 @@ Vacancy Scorer - анализирует сообщения и определяе
 """
 
 import re
+import hashlib
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta, timezone
+
+
+class MessageDeduplicator:
+    """Fix 10: Дедупликация сообщений по нормализованному тексту"""
+    
+    def __init__(self, ttl_hours=48):
+        self.seen_hashes = {}  # hash → timestamp
+        self.ttl = timedelta(hours=ttl_hours)
+    
+    def is_duplicate(self, text, timestamp=None):
+        normalized = re.sub(r'[\U00010000-\U0010ffff]', '', text.lower())
+        normalized = re.sub(r'\s+', ' ', normalized).strip()[:200]
+        text_hash = hashlib.md5(normalized.encode()).hexdigest()
+        now = timestamp or datetime.utcnow()
+        expired = [h for h, ts in self.seen_hashes.items() if now - ts > self.ttl]
+        for h in expired:
+            del self.seen_hashes[h]
+        if text_hash in self.seen_hashes:
+            return True
+        self.seen_hashes[text_hash] = now
+        return False
 
 
 class VacancyScorer:
@@ -28,7 +50,15 @@ class VacancyScorer:
                 r"кластеризация", r"перелинковка",
                 r"аудит сайта", r"seo-audit",
                 r"вывести сайт в поиск", r"поднять сайт в выдаче",
-                r"нужно сео", r"нужно seo", r"продвиньте сайт"
+                r"нужно сео", r"нужно seo", r"продвиньте сайт",
+                r"\bсеошник\w*\b",
+                r"seo[- ]копирайт",
+                r"поведенческ\w+\s+фактор",
+                r"внешн\w+\s+(?:оптимизаци|ссылк)",
+                r"(?:google|гугл)\s+(?:search\s+console|вебмастер)",
+                r"яндекс\s+вебмастер",
+                r"(?:наращивание|закупка)\s+(?:ссылок|ссылочн)",
+                r"(?:title|description|мета[- ]?теги)"
             ],
             "priority": 3
         },
@@ -49,7 +79,11 @@ class VacancyScorer:
                 r"контекст под ключ",
                 r"запустить директ", r"настроить яндекс",
                 r"нужна реклама в яндексе", r"хочу лидов из поиска",
-                r"настройте рекламу"
+                r"настройте рекламу",
+                r"(?:ведение|настройка|оптимизация)\s+(?:рекламн\w+\s+)?кампани[ийя]",
+                r"(?:реклама|продвижение)\s+в\s+яндекс",
+                r"(?:минус[- ]?слова|минусовка)",
+                r"(?:конверси\w+|cpa|cpc|ctr)\s+(?:оптимизаци|улучш)"
             ],
             "priority": 3
         },
@@ -95,7 +129,10 @@ class VacancyScorer:
                 r"продвижени(?:е|я) (?:на |в )?авито",
                 r"маспостинг", r"автозагрузка авито",
                 r"продажи через авито", r"раскачать авито",
-                r"нужны лиды с авито", r"настроить авито"
+                r"нужны лиды с авито", r"настроить авито",
+                r"(?:продвижение|раскрутка|ведение)\s+(?:на\s+)?авито",
+                r"(?:авито|avito)\s+(?:про|магазин|кабинет)",
+                r"(?:объявлени\w+|карточк\w+)\s+(?:на\s+)?авито"
             ],
             "priority": 3
         }
@@ -115,7 +152,14 @@ class VacancyScorer:
                 r"readymag", r"webflow",
                 r"хочу сайт", r"нужен сайт", r"сделать сайт",
                 r"помогите с сайтом", r"кто делает сайты",
-                r"нужен лендинг", r"собрать сайт"
+                r"нужен лендинг", r"собрать сайт",
+                r"\bcms\b",
+                r"(?:доработка|переделка|редизайн)\s+сайт",
+                r"\bflexbe\b", r"\bкрафтум\b", r"\bcraftum\b",
+                r"(?:opencart|опенкарт|woocommerce|вукомерс)",
+                r"(?:адаптивн\w+\s+(?:верстк|дизайн))",
+                r"(?:интеграци\w+)\s+(?:с\s+)?(?:crm|1с|битрикс|амо)",
+                r"\bсайтолог\b", r"\bтильдолог\b"
             ],
             "priority": 2
         },
@@ -127,7 +171,10 @@ class VacancyScorer:
                 r"дизайн лендинг",
                 r"прототипирование",
                 r"figma дизайн",
-                r"адаптивн(?:ый|ого) дизайн"
+                r"адаптивн(?:ый|ого) дизайн",
+                r"(?:макет|прототип)\s+(?:сайта|лендинга|страниц)",
+                r"(?:дизайн|редизайн)\s+(?:интернет[- ]?магазин|сайт|лендинг|страниц)",
+                r"(?:figma|фигма)\s+(?:макет|дизайн|прототип)"
             ],
             "priority": 2
         },
@@ -143,8 +190,8 @@ class VacancyScorer:
         # Копирайтинг исключаем, НО не SEO-копирайтинг
         r"(?<!seo[- ])копирайтер", r"(?<!seo[- ])копирайтинг",
         r"редактор", r"корректор",
-        r"ассистент", r"помощник",  # Исключаем всех помощников без исключений
-        r"продуктовый маркетолог", r"product marketing",
+        r"ассистент", r"помощник",
+        r"(?<!digital[- ])маркетолог", r"продуктовый маркетолог", r"product marketing",
         r"маркетинговый копирайтинг",
         r"продающ(?:ие|их) текст",
         r"коммерческ(?:ие|их) текст",
@@ -154,7 +201,7 @@ class VacancyScorer:
         r"аналитик", r"анализ данных",
         r"\bcrm\b", r"crm[- ]менеджер", r"crm[- ]маркетолог",
         # Дизайн и визуал
-        r"графический дизайнер", r"веб[- ]дизайнер", r"ui/ux",
+        r"графический дизайнер", 
         r"моушн[- ]дизайнер", r"motion designer",
         r"видеокреатор", r"видео[- ]монтаж", r"монтажер",
         r"рилсмейкер", r"reels", r"shorts",
@@ -206,7 +253,18 @@ class VacancyScorer:
         r"закрыть задачу", r"помогите закрыть",
         r"откликнуться", r"заполнить анкет", r"заполнить форму",
         r"ищу того кто", r"нужен человек который",
-        r"кто может реализовать", r"запустить проект"
+        r"кто может реализовать", r"запустить проект",
+        # Новые индикаторы (P1)
+        r"📌\s+\w",                           # Маркер заказа Kwork/биржи
+        r"🔥\s*(?:заказ|срочн)",               # Срочный заказ Tilda Profi
+        r"связаться с заказчиком",             # Kwork
+        r"freelancehunt\.com/project",         # Ссылки Freelancehunt
+        r"freelance\.ua/orders",               # Ссылки freelance.ua
+        r"kwork\.ru/projects",                 # Ссылки Kwork
+        r"finder\.work/vacancies",             # Ссылки finder.work
+        r"hh\.ru/vacancy",                     # HeadHunter
+        r"🙋[‍♂️♀️]*\s",                        # Маркер заказчика
+        r"от\s+\d+[\s,]*\d*\s*(?:до|₽|руб)",  # Вилка зарплаты
     ]
     
     # Признаки АГЕНТСТВА (блокирующий фактор -10)
@@ -268,8 +326,15 @@ class VacancyScorer:
         r"клониров(?:ать|ание)\s+голос(а)?",
         r"вебинар", r"приглашаем\s+на\s+(?:семинар|вебинар)",
         r"АСУТП", r"промышленн(?:ые|ую)\s+автоматизаци",
+        # Fix 11: Новые спам-паттерны
+        r"массовая?\s+рассылк[аи]",
+        r"(?:рассылк[аи]|инвайтинг|парсинг).{0,30}(?:telegram|тг|tg)",
+        r"(?:софт|бот)\s+(?:для\s+)?(?:рассылк|парсинг|инвайтинг)",
+        r"оператор\s+(?:онлайн[- ])?чата",
+        r"международн\w+\s+(?:онлайн[- ])?школ",
+        r"присоединяйтесь\s+к\s+нашему\s+(?:международн|чат)",
         # Украинский язык
-        r"[єґіїІЇ]", r"\bщо\b", r"\bта\b", r"\bякщо\b"
+        r"[єґіїІЇ]", r"\bщо\b", r"\bта\s+(?:й|її|він|вона)\b", r"\bякщо\b"
     ]
     
     # Признаки "ПРЕДЛОЖЕНИЯ УСЛУГ" (блокируем, так как нам нужны запросы)
@@ -312,7 +377,22 @@ class VacancyScorer:
         r"коллеги,?\s*(?:кто\s+хочет|устали|хочу\s+предложить)",
         r"могу\s+помочь\s+с",
         r"разработки?\s+любой\s+сложности",
-        r"последнее\s+время\s+(?:часто\s+)?вижу"
+        r"последнее\s+время\s+(?:часто\s+)?вижу",
+        # Fix 9: Новые offer-паттерны
+        r"#(?:фрилансер|исполнитель|разработчик|дизайнер|верстальщик)\b",
+        r"(?:привет|здравствуйте)[!.\s]*(?:я\s+(?:веб|дизайн|маркетолог|фрилансер|специалист))",
+        r"(?:привет|здравствуйте)[!.\s]*(?:предлагаю|меня\s+зовут)",
+        r"(?:предлагаю|выполню|сделаю|настрою|разработаю|создам|соберу)\s+(?:для\s+вас|вам|под\s+ключ|качественн)",
+        r"(?:более|больше|свыше|от)\s+\d+\s+(?:(?:реализованных\s+)?проектов|(?:успешных\s+)?кейсов|лет\s+(?:в|опыт))",
+        r"(?:бесплатн\w+)\s+(?:аудит|консультаци|разбор|стратеги)",
+        r"(?:со\s+скидкой|акция|спецпредложение|спец\.?\s*цена)",
+        r"(?:готов(?:а)?)\s+(?:взять|выполнить|приступить|начать|стартовать)",
+        r"(?:открыт(?:а)?|свободен|доступен|доступна)\s+(?:для|к)\s+(?:новых?|сотрудничеств|проект|заказ)",
+        r"(?:нахожусь|я)\s+в\s+поиске\s+(?:новых?\s+)?(?:клиентов|заказов|проектов)",
+        r"(?:приведу|привлеку|привлечем|приведём)\s+(?:в\s+ваш|вам|новых?)\s+(?:бизнес|компани|клиент)",
+        r"(?:мой|моя|мои|моё)\s+(?:портфолио|кейс|работ|опыт)",
+        r"(?:возьму|беру|принимаю)\s+(?:в\s+работу|на\s+(?:проект|аутсорс)|заказ)",
+        r"(?:гарантирую|гарантия)\s+(?:результат|возврат|качеств)",
     ]
     
     # Другие исключения (-3)
@@ -328,7 +408,12 @@ class VacancyScorer:
     CONTEXT_INDICATORS = [
         r"посоветуйте", r"рекомендуйте", r"подскажите", r"знает ли кто",
         r"нужна помощь", r"кто делал", r"кто может сделать", r"ищу специалиста",
-        r"есть контакты", r"дайте контакт", r"кто занимается", r"нужна консультация"
+        r"есть контакты", r"дайте контакт", r"кто занимается", r"нужна консультация",
+        # Новые контекстные индикаторы (P1)
+        r"заказ\s*#\d+",                       # Номер заказа
+        r"бюджет:",                            # Указание бюджета
+        r"дедлайн:",                           # Указание сроков
+        r"ТЗ:",                                # Техзадание
     ]
 
     def __init__(self):
@@ -337,6 +422,7 @@ class VacancyScorer:
         import os
         self.all_specializations = {**self.SPECIALIZATIONS, **self.SPECIALIZATIONS_MEDIUM}
         self.target_keywords = [k.strip().lower() for k in settings.TARGET_KEYWORDS.split(",") if k.strip()]
+        self.deduplicator = MessageDeduplicator(ttl_hours=48)
         
         # Загрузка динамических фильтров
         self.dynamic_filters = {"positive": [], "negative": []}
@@ -354,64 +440,72 @@ class VacancyScorer:
         """
         text_lower = text.lower()
         
+        # Fix 10: Дедупликация
+        if self.deduplicator.is_duplicate(text, message_date):
+            return self._negative_result("Дубликат")
+        
         # 0. Проверка на спам (эфиры, курсы, промо) - ПЕРВООЧЕРЕДНО
         if self._is_spam(text_lower):
             return self._negative_result("Рекламный/промо контент")
             
         # ПРОВЕРКА НА ИЗБЫТОК ЭМОДЗИ (часто спам/офферы)
         emoji_count = len(re.findall(r"[\U00010000-\U0010ffff]", text))
-        if emoji_count > 10:
+        if emoji_count > 25:
             return self._negative_result(f"Избыток эмодзи ({emoji_count})")
+        
+        # Мягкий штраф за эмодзи
+        emoji_penalty = -1 if emoji_count > 15 else 0
 
         # 0.1 Проверка на ПРЕДЛОЖЕНИЕ услуг (нам нужны только запросы)
         if self._is_offer(text_lower):
             return self._negative_result("Предложение услуг (Sellers)")
 
-        # 1. Детекция типа лида
-        vacancy_score = self._detect_vacancy_indicators(text_lower)
-        context_score = self._detect_context_indicators(text_lower)
+        # 1. Детекция специализации (Fix 1: Перенесено выше)
+        specialization, spec_score, keywords = self._detect_specialization(text_lower)
         keyword_match = self._check_target_keywords(text_lower)
         
-        # Если нет ни вакансии, ни контекста, ни точного попадания по ключевикам - скип
-        if vacancy_score == 0 and context_score == 0 and not keyword_match:
-            return self._negative_result("Нет сигналов лида (Вакансия/Контекст/Ключевики)")
-        
-        # 2. Проверка исключенных специализаций (кроме случаев точного ключевика Евгения)
-        # Если это 'помощник', 'ассистент', 'автор', 'редактор', 'копирайтер', 'бизнесассистент' - блокируем безусловно
-        # Также блокируем сценаристов, продюсеров и администраторов ютуб/соцсетей/школ
-        # Также блокируем SMM, техспецов, кураторов, продажников и экспертов
-        # Также блокируем сообщения с хештегами предложения услуг #помогу, #услуги, #сценарист, #продюсер, #резюме, #ищуработу
-        # Добавляем #маркетолог (как хештег - это обычно оффер) и #ищу (в начале сообщения)
-        is_blocked_role = re.search(r"помощник|ассистент|(?<!seo[- ])автор|(?<!seo[- ])редактор|(?<!seo[- ])копирайтер|бизнесассистент|сценарист|продюсер|продюссер|администратор|smm|смм|техспец|куратор|продажник|менеджер по продажам|sales manager|эксперт|маркетолог|таргетолог|таргет|facebook|instagram|фейсбук|инстаграм|(?<!\w)fb(?!\w)|(?<!\w)ig(?!\w)|event[- ]агентство|маркетинговое агентство|аккаунт.*авито|отзыв(?:ы|ов).*авито|посев(?:ы|ам)|коротк(?:ие|их) ролик(?:и|ов)|reels|рилс|риллс|shorts|клониров(?:ать|ание) голос(а)?|татьяна мелехова|сертифицированн|#помогу|#услуги|#сценарист|#продюсер|#продюссер|#маркетолог|#резюме|#ищуработу|^#ищу", text_lower, re.IGNORECASE)
-        if is_blocked_role:
-            return self._negative_result(f"Исключено: Блокируемая роль/хештег ({is_blocked_role.group(0)})")
-
-        if self._is_excluded_specialization(text_lower) and not keyword_match:
-            return self._negative_result("Исключенная специализация (SMM/Email/Analyst/CRM)")
-        
-        # 3. Проверка исключенных локаций
-        excluded_location = self._check_excluded_locations(text_lower)
-        if excluded_location:
-            return self._negative_result(f"Исключенная локация: {excluded_location}")
-        
-        # 4. Определение специализации
-        specialization, spec_score, keywords = self._detect_specialization(text_lower)
-        
-        # Если специализация не найдена по паттернам, но есть keyword_match - ставим соотв. спец.
         if not specialization and keyword_match:
             specialization = "Keyword Match"
             spec_score = 3
             keywords = [keyword_match]
 
-        if not specialization:
-            return self._negative_result("Специализация не определена (даже через ключевые слова)")
+        # 2. Проверка на блокируемые роли (Fix 1: Только если спец-я не найдена)
+        # Убраны ^#ищу, #помогу, маркетолог
+        blocked_role_pattern = r"помощник|ассистент|(?<!seo[- ])автор|(?<!seo[- ])редактор|(?<!seo[- ])копирайтер|бизнесассистент|сценарист|продюсер|продюссер|администратор|smm|смм|техспец|куратор|продажник|менеджер по продажам|sales manager|эксперт|таргетолог|таргет|facebook|instagram|фейсбук|инстаграм|(?<!\w)fb(?!\w)|(?<!\w)ig(?!\w)|event[- ]агентство|маркетинговое агентство|аккаунт.*авито|отзыв(?:ы|ов).*авито|посев(?:ы|ам)|коротк(?:ие|их) ролик(?:и|ов)|reels|рилс|риллс|shorts|клониров(?:ать|ание) голос(а)?|татьяна мелехова|сертифицированн|#услуги|#сценарист|#продюсер|#продюссер|#резюме|#ищуработу"
+        is_blocked_role = re.search(blocked_role_pattern, text_lower, re.IGNORECASE)
         
-        # 5. Проверка на агентство
+        if is_blocked_role and not specialization:
+            return self._negative_result(f"Исключено: Блокируемая роль ({is_blocked_role.group(0)})")
+
+        # 3. Детекция типа лида (Fix 12: добавлен order_format_score)
+        vacancy_score = self._detect_vacancy_indicators(text_lower)
+        context_score = self._detect_context_indicators(text_lower)
+        order_format_score = self._detect_order_format(text_lower)
+        
+        demand_score = max(vacancy_score, context_score)
+        
+        # Fix 12+14: Требуем хотя бы один «якорь» — demand ИЛИ формат заказа
+        if demand_score == 0 and order_format_score == 0 and not specialization:
+            return self._negative_result("Нет demand-сигнала и не формат заказа")
+        
+        # 4. Проверка исключенных специализаций (только если спец-я не признана целевой)
+        if self._is_excluded_specialization(text_lower) and not specialization:
+            return self._negative_result("Исключенная специализация (SMM/Email/Analyst/CRM)")
+        
+        # 5. Проверка исключенных локаций
+        excluded_location = self._check_excluded_locations(text_lower)
+        if excluded_location:
+            return self._negative_result(f"Исключенная локация: {excluded_location}")
+        
+        if not specialization:
+             return self._negative_result("Специализация не определена")
+        
+        # 6. Проверка на агентство (Fix 5: Пропускать если есть специализация)
         agency_check = self._check_agency(text_lower)
-        if agency_check['is_agency']:
+        if agency_check['is_agency'] and not specialization:
             return self._negative_result("Вакансия/Запрос в агентство", agency_check=agency_check)
         
-        # 6. Дополнительные бонусы
+        # 7. Дополнительные бонусы
         remote_bonus = 1 if self._detect_remote_work(text_lower) else 0
         budget_text = self._extract_budget(text)
         budget_bonus = 1 if budget_text else 0
@@ -420,15 +514,15 @@ class VacancyScorer:
         # Проверка других исключений
         exclusion_penalty = self._check_other_exclusions(text_lower)
         
-        # Финальный расчет
-        # Запрос в контексте (например "подскажите") дает сильный сигнал
+        # Финальный расчет (Fix 12: используем max из demand и order_format)
         total_score = (
-            max(vacancy_score, context_score) + # Берем лучшее из типа (вакансия или вопрос)
+            max(demand_score, order_format_score) + 
             spec_score +
             remote_bonus +
             budget_bonus +
             freshness_bonus +
-            exclusion_penalty
+            exclusion_penalty +
+            emoji_penalty
         )
         
         return {
@@ -444,7 +538,8 @@ class VacancyScorer:
                 'remote_work': remote_bonus,
                 'budget_mentioned': budget_bonus,
                 'freshness': freshness_bonus,
-                'exclusions_penalty': exclusion_penalty
+                'exclusions_penalty': exclusion_penalty,
+                'emoji_penalty': emoji_penalty
             },
             'excluded_specialization': False,
             'excluded_platforms': [],
@@ -613,7 +708,11 @@ class VacancyScorer:
         if not message_date:
             return 0
         
-        now = datetime.now(timezone.utc)
+        # Приводим к naive UTC для корректного вычитания
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if message_date.tzinfo:
+            message_date = message_date.replace(tzinfo=None)
+            
         age = now - message_date
         
         if age <= timedelta(days=3):
@@ -640,8 +739,38 @@ class VacancyScorer:
             'rejection_reason': reason
         }
     def _is_offer(self, text: str) -> bool:
-        """Проверка на предложение услуг (Sellers)."""
+        """Проверка на предложение услуг (Sellers). Fix 9: demand override."""
+        # Если есть сильный demand-сигнал — НЕ считать оффером
+        demand_overrides = [
+            r"\bтребуется\b", r"\bтребуются\b", r"\bвакансия\b",
+            r"(?:срочно\s+)?нуж(?:ен|на|ны)\b",
+            r"\bищу\b", r"\bищем\b",
+            r"📌\s+\w", r"заказ\s*#\d+",
+            r"связаться с заказчиком",
+        ]
+        for pattern in demand_overrides:
+            if re.search(pattern, text, re.IGNORECASE):
+                return False
+        
         for pattern in self.OFFER_PATTERNS:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
         return False
+
+    def _detect_order_format(self, text: str) -> int:
+        """Fix 12: Детектор формата заказа (Kwork, Tilda Profi, биржи). Возвращает +2."""
+        order_patterns = [
+            r"📌\s+\w",
+            r"🔥\s*(?:заказ|срочн)",
+            r"связаться с заказчиком",
+            r"заказ\s*#\d+",
+            r"freelancehunt\.com/project",
+            r"freelance\.ua/orders",
+            r"kwork\.ru/projects",
+            r"finder\.work/vacancies",
+            r"hh\.ru/vacancy",
+        ]
+        for pattern in order_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return 2
+        return 0

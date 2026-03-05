@@ -7,8 +7,9 @@ import re
 import os
 import random
 import sqlite3
+from typing import Optional
 from datetime import datetime, timedelta, timezone
-from telethon import TelegramClient, events, functions, errors
+from pyrogram import Client, errors
 from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
 from core.database.models import MessageLog, Lead
@@ -23,7 +24,7 @@ class GwenCommander:
     Командный центр Гвен. Работает через SUPERVISOR_BOT_TOKEN.
     """
     
-    def __init__(self, main_client: TelegramClient, db_path: str = None):
+    def __init__(self, main_client: Client, db_path: str = None):
         self.db_path = db_path or str(settings.VACANCY_DB_PATH)
         self.bot_token = settings.SUPERVISOR_BOT_TOKEN
         self.chat_id = settings.SUPERVISOR_CHAT_ID
@@ -31,7 +32,24 @@ class GwenCommander:
         self.bot_client = None
         self.enabled = bool(self.bot_token)
         self.waiting_for_reason = {} # user_id -> v_hash
+        self.is_running = False
+        self._chat_name_to_id = {} # Cache for metadata resolution
         
+    async def _resolve_chat_by_name(self, name: str) -> Optional[int]:
+        """Пытается найти ID чата по его экранному имени среди диалогов."""
+        if not name: return None
+        if name in self._chat_name_to_id:
+            return self._chat_name_to_id[name]
+            
+        logger.info(f"🔄 Поиск Chat ID для имени: {name}")
+        async for dialog in self.main_client.get_dialogs():
+            d_title = getattr(dialog.chat, 'title', None) or getattr(dialog.chat, 'first_name', None)
+            if d_title == name:
+                self._chat_name_to_id[name] = dialog.chat.id
+                return dialog.chat.id
+        
+        return None
+
     async def start(self, start_bot=True):
         """Запуск бота-командира."""
         if not self.enabled:
@@ -40,34 +58,10 @@ class GwenCommander:
 
         try:
             if start_bot:
-                self.bot_client = TelegramClient('gwen_commander', settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
-                await self.bot_client.start(bot_token=self.bot_token)
-                
-                # Регистрация обработчиков команд
-                self.bot_client.add_event_handler(self.handle_status, events.NewMessage(pattern='/status'))
-                self.bot_client.add_event_handler(self.handle_help, events.NewMessage(pattern='/start|/help'))
-                self.bot_client.add_event_handler(self.handle_stats, events.NewMessage(pattern='/stats'))
-                self.bot_client.add_event_handler(self.handle_outreach, events.NewMessage(pattern=r'/outreach\s+(\d+)ч\s+(.+)'))
-                
-                # Команды управления системой
-                self.bot_client.add_event_handler(self.handle_set_model, events.NewMessage(pattern=r'/set_model\s+(.+)'))
-                self.bot_client.add_event_handler(self.handle_task, events.NewMessage(pattern=r'/task\s+(.+)'))
-                
-                # Обработка всех остальных сообщений (текст и голос) как ИИ-чат или команды голосом
-                self.bot_client.add_event_handler(self.handle_chat_or_voice, events.NewMessage(incoming=True))
-                
-                # Кнопки для управления (Callback Query)
-                self.bot_client.add_event_handler(self.handle_callback, events.CallbackQuery())
-                
-                # Команды для обучения и расширения семантики
-                self.bot_client.add_event_handler(self.handle_learn_manual, events.NewMessage(pattern='/learn'))
-                self.bot_client.add_event_handler(self.handle_expand_manual, events.NewMessage(pattern='/expand'))
-                self.bot_client.add_event_handler(self.handle_spam, events.NewMessage(pattern=r'/spam(?:\s+(.+))?'))
-                
-                # Команда для отчетов
-                self.bot_client.add_event_handler(self.handle_report, events.NewMessage(pattern=r'/report(?:\s+(.+))?'))
-                
-                logger.info("🧠 Gwen Commander Bot interface is online.")
+                # NOTE: Bot commands now handled by Aiogram bot.py, not Telethon.
+                # Commander используется только в режиме start_bot=False.
+                logger.warning("⚠️ start_bot=True is deprecated. Use Aiogram bot.py instead.")
+                self.bot_client = None
             else:
                 logger.info("🧠 Gwen Commander starting in Orchestrator mode (tasks only).")
             
@@ -93,22 +87,21 @@ class GwenCommander:
     async def check_account_health(self) -> str:
         """
         Проверка статуса аккаунта через @SpamBot.
-        Отправляет /start дважды (как на скриншоте пользователя).
         """
         logger.info("🔍 Запускаю диагностику аккаунта через @SpamBot...")
         try:
-            async with self.main_client.conversation("@SpamBot", timeout=10) as conv:
-                # Первая попытка
-                await conv.send_message("/start")
-                resp1 = await conv.get_response()
-                logger.info(f"SpamBot Resp 1: {resp1.text[:50]}...")
-                
-                # Вторая попытка (нужна для получения финального статуса)
-                await conv.send_message("/start")
-                resp2 = await conv.get_response()
-                logger.info(f"SpamBot Resp 2: {resp2.text[:50]}...")
-                
-                return resp2.text
+            # Отправляем /start
+            await self.main_client.send_message("@SpamBot", "/start")
+            await asyncio.sleep(2)
+            
+            # Получаем последнее сообщение
+            messages = []
+            async for message in self.main_client.get_chat_history("@SpamBot", limit=1):
+                messages.append(message)
+            
+            if messages:
+                return messages[0].text
+            return "Нет ответа от @SpamBot"
         except Exception as e:
             logger.error(f"Failed to check SpamBot: {e}")
             return f"Не удалось связаться с @SpamBot: {str(e)}"
@@ -150,10 +143,10 @@ class GwenCommander:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority
+                    SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
                     FROM vacancies 
                     WHERE status = 'accepted' AND (response IS NULL OR response = "")
-                    ORDER BY last_seen ASC LIMIT 1
+                    ORDER BY last_seen DESC LIMIT 1
                 """)
                 new_vacancies = cursor.fetchall()
                 conn.close()
@@ -166,8 +159,43 @@ class GwenCommander:
                     v_tier = v_dict['tier'] or 'COLD'
                     v_priority = v_dict['priority'] or 0
                     
-                    # БЛОКиРОВКА: лиды без контакта бесполезны — нечего отправлять
+                    # БЛОКиРОВКА: лиды без контакта бесполезны — пробуем восстановить из метадаты
                     if not v_contact or v_contact == "Не найден":
+                        v_msg_id = v_dict.get('message_id')
+                        v_source = v_dict.get('source') # Имя чата
+                        
+                        if v_msg_id and v_source:
+                            try:
+                                logger.info(f"🔍 Попытка восстановить контакт из метадаты: {v_source} / {v_msg_id}")
+                                # Пытаемся получить сообщение через Pyrogram
+                                # Сначала резолвим имя чата в ID
+                                chat_id = await self._resolve_chat_by_name(v_source)
+                                if not chat_id:
+                                    # Пробуем саму строку если это юзернейм/ID
+                                    chat_id = v_source
+                                    
+                                try:
+                                    msg = await self.main_client.get_messages(chat_id, message_ids=[v_msg_id])
+                                    if msg and len(msg) > 0 and msg[0].from_user:
+                                        user = msg[0].from_user
+                                        v_contact = user.username if user.username else str(user.id)
+                                        logger.info(f"✨ Контакт восстановлен! {v_contact}")
+                                        # Сохраняем для будущего
+                                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                        cursor = conn.cursor()
+                                        cursor.execute("UPDATE vacancies SET contact_link = ?, chat_id = ? WHERE hash = ?", (v_contact, chat_id if isinstance(chat_id, int) else None, v_hash))
+                                        conn.commit()
+                                        conn.close()
+                                    else:
+                                        raise Exception("Message or user not found")
+                                except Exception as e:
+                                    logger.warning(f"Failed to resolve metadata contact: {e}")
+                                    v_contact = None
+                            except Exception as e:
+                                logger.error(f"Metadata resolution error: {e}")
+                                v_contact = None
+
+                    if not v_contact:
                         logger.info(f"⏭ Пропуск лида без контакта: {v_hash[:8]}...")
                         conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                         cursor = conn.cursor()
@@ -190,9 +218,10 @@ class GwenCommander:
                             is_duplicate = False
                             try:
                                 async with async_session() as session:
-                                    # Получаем сущность для ID (нужно для MessageLog)
-                                    entity = await self.main_client.get_entity(target)
-                                    entity_id = entity.id
+                                    entity = await self.main_client.get_users(target)
+                                    entity_id = entity.id if entity else None
+                                    if not entity_id:
+                                        raise Exception(f"User not found: {target}")
                                     
                                     # Ищем лид и его историю сообщений
                                     stmt = select(Lead).where(Lead.telegram_id == entity_id)
@@ -242,16 +271,18 @@ class GwenCommander:
                             # ЛОГИРОВАНИЕ В ОСНОВНУЮ БД (для Дашборда)
                             try:
                                 async with async_session() as session:
-                                    # Получаем сущность для ID (нужно для MessageLog)
-                                    entity = await self.main_client.get_entity(target)
-                                    entity_id = entity.id
+                                    # Получаем сущность для ID (Pyrogram)
+                                    entity = await self.main_client.get_users(target)
+                                    entity_id = entity.id if entity else None
+                                    if not entity_id:
+                                        raise Exception(f"User not found: {target}")
                                     
                                     # Ищем или создаем лид
                                     stmt = select(Lead).where(Lead.telegram_id == entity_id)
                                     res = await session.execute(stmt)
                                     lead = res.scalars().first()
                                     
-                                    now = datetime.utcnow()
+                                    now = datetime.now(timezone.utc)
                                     if not lead:
                                         lead = Lead(
                                             telegram_id=entity_id,
@@ -291,9 +322,15 @@ class GwenCommander:
                             v_dict['status_message'] = "✅ ОТПРАВЛЕНО АВТОМАТИЧЕСКИ"
                             await supervisor_notifier.notify_new_vacancy(v_dict)
                             
-                        except errors.PeerFloodError:
-                            logger.error("🛑 КРИТИЧЕСКОЕ ОГРАНИЧЕНИЕ: PeerFloodError (Спам-блок!)")
-                            
+                        except errors.FloodWait as e:
+                            logger.warning(f"⏳ FloodWait: нужно подождать {e.value} сек.")
+                            if e.value > 180: # Если ждать больше 3 минут
+                                await supervisor_notifier.send_error(f"⏳ Гвен взяла паузу. Telegram просит подождать {e.value} секунд.")
+                            await asyncio.sleep(e.value)
+                            continue
+
+                        except (errors.UserPrivacyRestricted, errors.PeerIdInvalid, errors.ChatWriteForbidden) as e:
+                            logger.error(f"⚠️ Ограничение отправки для {v_contact}: {e}")
                             # Запускаем авто-диагностику через @SpamBot
                             status_report = await self.check_account_health()
                             
@@ -312,21 +349,13 @@ class GwenCommander:
                                 )
                                 return # Выходим из цикла
                             else:
-                                # Ограничений нет, значит это случайный "глюк" или временный лимит на конкретное действие
-                                await supervisor_notifier.send_error(
-                                    "⚠️ <b>Предупреждение (PeerFloodError)</b>\n\n"
-                                    "Telegram выдал ошибку, но @SpamBot утверждает, что ограничений нет.\n"
-                                    "<b>Продолжаю работу</b> после защитной паузы (3 минуты)."
-                                )
-                                await asyncio.sleep(180) # Защитная пауза 3 минуты
+                                # Ограничений нет, значит это просто приватность пользователя или невалидный ID
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE vacancies SET response = 'failed_privacy' WHERE hash = ?", (v_hash,))
+                                conn.commit()
+                                conn.close()
                                 continue
-
-                        except errors.FloodWaitError as e:
-                            logger.warning(f"⏳ FloodWaitError: нужно подождать {e.seconds} сек.")
-                            if e.seconds > 180: # Если ждать больше 3 минут
-                                await supervisor_notifier.send_error(f"⏳ Гвен взяла паузу. Telegram просит подождать {e.seconds} секунд.")
-                            await asyncio.sleep(e.seconds)
-                            continue
 
                         except Exception as e:
                             logger.error(f"Auto-outreach failed for {v_contact}: {e}")
@@ -789,8 +818,7 @@ class GwenCommander:
             
         target = arg.strip().replace('@', '')
         try:
-            from telethon import functions
-            await self.main_client(functions.contacts.BlockRequest(id=target))
+            await self.main_client.block_user(target)
             
             # Анализ причины спама (ЛОКАЛЬНО)
             from systems.gwen.learning_engine import gwen_learning_engine
@@ -861,10 +889,9 @@ class GwenCommander:
                 # Блокируем в Телеграм (основной аккаунт)
                 if v_contact_link and v_contact_link != "Не найден":
                     try:
-                        from telethon import functions
                         contact_part = v_contact_link.split('/')[-1].replace('@', '').strip()
                         if contact_part:
-                            await self.main_client(functions.contacts.BlockRequest(id=contact_part))
+                            await self.main_client.block_user(contact_part)
                             logger.info(f"🚫 Пользователь {contact_part} заблокирован")
                         else:
                             logger.warning(f"Could not extract username from {v_contact_link}")
@@ -1027,29 +1054,26 @@ class GwenCommander:
 
     async def health_check_loop(self):
         """Цикл проверки здоровья систем Гвен."""
+        from systems.gwen.notifier import supervisor_notifier
         logger.info("Gwen starting background health monitoring...")
         while True:
             try:
                 status = await health_monitor.get_full_status()
                 
                 for service, state in status.items():
-                    if service in ["overall", "ollama"]: continue # Ollama не триггерит алерты больше
+                    if service in ["overall", "ollama"]: continue
                     
                     is_ok = (state == "OK")
                     if is_ok != self.service_states.get(service, True):
-                        # Состояние изменилось
                         self.service_states[service] = is_ok
                         icon = "✅" if is_ok else "❌"
                         msg = f"{icon} <b>Гвен сообщает:</b> Состояние сервиса <b>{service}</b> изменилось на <b>{state}</b>."
-                        
                         try:
-                            # Принудительно приводим к int, так как Телетон-боты не любят строки-ID
-                            target_id = int(str(self.chat_id)) if str(self.chat_id).replace('-', '').isdigit() else self.chat_id
-                            await self.bot_client.send_message(target_id, msg, parse_mode='html')
+                            await supervisor_notifier.send_error(msg)
                         except Exception as e:
                             logger.error(f"Gwen failed to send health alert: {e}")
                 
             except Exception as e:
                 logger.error(f"Gwen health loop error: {e}")
             
-            await asyncio.sleep(60) # Проверка раз в минуту
+            await asyncio.sleep(60)

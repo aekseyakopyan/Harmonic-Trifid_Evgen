@@ -161,7 +161,9 @@ async def main():
 
     asyncio.create_task(_safe_follow_ups())
 
-    await client.idle()
+    # Keep running (client.idle() removed in newer Pyrogram)
+    stop_event = asyncio.Event()
+    await stop_event.wait()
 
 
 if __name__ == "__main__":

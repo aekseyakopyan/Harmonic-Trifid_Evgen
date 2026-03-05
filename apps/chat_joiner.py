@@ -6,7 +6,7 @@ import logging
 from typing import List
 from dotenv import load_dotenv
 from pyrogram import Client
-from pyrogram.errors import FloodWait, UserAlreadyParticipant, ChannelsTooMuch
+from pyrogram.errors import FloodWait, UserAlreadyParticipant, ChannelsTooMuch, BadRequest
 
 # Настройка логирования
 logging.basicConfig(
@@ -57,6 +57,15 @@ async def join_chat(client: Client, link: str) -> bool:
     except ChannelsTooMuch:
         logger.error(f"❌ Лимит чатов (500) достигнут! Пауза 1 час...")
         await asyncio.sleep(3600)
+        return False
+
+    except BadRequest as e:
+        err = str(e)
+        # Битая ссылка — пропускаем БЕЗ паузы
+        if any(code in err for code in ["USERNAME_INVALID", "USERNAME_NOT_OCCUPIED", "INVITE_HASH_INVALID", "INVITE_HASH_EXPIRED", "CHANNEL_INVALID"]):
+            logger.debug(f"♻️ Пропуск: {link} ({err})")
+            return None  # None = битая ссылка, пауза не нужна
+        logger.error(f"❌ Ошибка при вступлении в {link}: {err}")
         return False
 
     except Exception as e:
@@ -124,7 +133,8 @@ async def main():
             api_id=API_ID,
             api_hash=API_HASH,
             session_string=session_str,
-            in_memory=True
+            in_memory=True,
+            sleep_threshold=60,  # Авто-ожидание при FloodWait до 60 сек
         )
     else:
         os.makedirs("data/sessions", exist_ok=True)
@@ -132,40 +142,33 @@ async def main():
             name="data/sessions/chat_joiner",
             api_id=API_ID,
             api_hash=API_HASH,
+            sleep_threshold=60,
         )
 
     async with app:
         logger.info("🚀 Pyrogram сессия запущена")
 
-        round_num = 0
-        while True:
-            round_num += 1
-            logger.info(f"🔄 Раунд #{round_num}: обходим {overall_total} чатов...")
+        success_count = 0
 
-            success_count = 0
-            already_joined_count = 0
+        for i, link in enumerate(links, 1):
+            logger.info(f"[{i}/{overall_total}]...")
+            link = str(link).strip()
+            if not link:
+                continue
 
-            for i, link in enumerate(links, 1):
-                logger.info(f"[{i}/{overall_total}]...")
-                link = str(link).strip()
-                if not link:
-                    continue
+            result = await join_chat(app, link)
+            if result is True:
+                success_count += 1
 
-                result = await join_chat(app, link)
-                if result:
-                    success_count += 1
+            # Пауза только если ссылка живая (result != None)
+            if result is not None and i < overall_total:
+                delay = random.randint(JOIN_DELAY_MIN, JOIN_DELAY_MAX)
+                logger.info(f"⏸ Пауза {delay} сек...")
+                await asyncio.sleep(delay)
 
-                if i < overall_total:
-                    delay = random.randint(JOIN_DELAY_MIN, JOIN_DELAY_MAX)
-                    logger.info(f"⏸ Пауза {delay} сек...")
-                    await asyncio.sleep(delay)
-
-            logger.info("="*30)
-            logger.info(f"🏁 Раунд #{round_num} завершён!")
-            logger.info(f"✅ Новых вступлений: {success_count}")
-            logger.info(f"⏳ Следующий раунд через 30 минут...")
-            logger.info("="*30)
-            await asyncio.sleep(1800)
+        logger.info("="*30)
+        logger.info(f"🏁 Готово! Новых вступлений: {success_count}")
+        logger.info("="*30)
 
 
 if __name__ == "__main__":
