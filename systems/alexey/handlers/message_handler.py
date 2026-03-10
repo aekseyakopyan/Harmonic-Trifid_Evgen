@@ -176,21 +176,37 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             history_items.append(f"{role}: {m.content}")
         history_text = "\n".join(history_items)
 
+        # Определяем: это ответ на холодный outreach?
+        is_outreach_dialog = any(m.intent == "outreach" for m in history_msgs)
+        first_outreach_msg = next((m for m in history_msgs if m.intent == "outreach"), None)
+
         # 2. Classify
         classifier = MessageClassifier()
         classification = await classifier.classify(full_text)
 
         # 3. Context
+        # Для outreach-диалогов: если клиент ответил коротко ("интересно", "расскажи"),
+        # дополняем поисковый запрос содержимым нашего оффера
         retriever = KnowledgeRetriever(session)
-        cases = await retriever.find_relevant_cases(full_text)
+        search_query = full_text
+        if is_outreach_dialog and first_outreach_msg and len(full_text.split()) < 6:
+            search_query = f"{full_text} {first_outreach_msg.content}"
+
+        cases = await retriever.find_relevant_cases(search_query)
         service = await retriever.find_service_by_category(classification.get("category", ""))
-        sales_materials = await retriever.search_markdown_kb(full_text)
+
+        # Если сервис не определился по короткому ответу — пробуем по тексту оффера
+        if not service and is_outreach_dialog and first_outreach_msg:
+            outreach_cls = await classifier.classify(first_outreach_msg.content)
+            service = await retriever.find_service_by_category(outreach_cls.get("category", ""))
+
+        sales_materials = await retriever.search_markdown_kb(search_query)
 
         external_cases = []
         if len(cases) < 2 and classification.get("category") not in ["general", None]:
             from core.knowledge_base.web_searcher import web_searcher
             service_name = service.name if service else classification.get("category")
-            external_cases = await web_searcher.search_cases(full_text, service_name)
+            external_cases = await web_searcher.search_cases(search_query, service_name)
 
         # 4. Prompt
         tone = classification.get("tone", "neutral")
@@ -199,6 +215,8 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
 
         if "hurry" in tone or "срочно" in text_lower or "быстро" in text_lower:
             current_emotion = "interested"
+        elif is_outreach_dialog and msg_count <= 3:
+            current_emotion = "intrigued"  # Лид ответил на наш оффер — потенциально горячий
         elif any(w in text_lower for w in ["сколько стоит", "цена", "прайс", "бюджет", "стоимость"]) and msg_count >= 3:
             current_emotion = "intrigued"
         elif tone == "negative" and msg_count > 0:
@@ -214,14 +232,34 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
         else:
             current_emotion = "skeptical"
 
-        if msg_count == 0:
-            task_instr = "Это первое сообщение от клиента. Коротко и живо: покажи интерес к задаче, задай один уточняющий вопрос."
-        elif msg_count <= 3:
-            task_instr = f"Диалог только начался (сообщение {msg_count + 1}). Продолжай квалификацию, уточняй потребности, не спеши с предложением."
-        elif msg_count <= 7:
-            task_instr = f"Диалог развивается (сообщение {msg_count + 1}). Давай конкретику, можно предложить что-то осязаемое. Следи за сигналами готовности к сделке."
+        if is_outreach_dialog:
+            if msg_count <= 2:
+                task_instr = (
+                    "Человек ответил на твой холодный отклик — значит, он уже ищет исполнителя. "
+                    "Квалификация не нужна: потребность подтверждена. "
+                    "Покажи себя как лучший выбор: коротко упомяни релевантный кейс из нашей практики, "
+                    "задай один точечный вопрос про детали их задачи."
+                )
+            elif msg_count <= 5:
+                task_instr = (
+                    f"Диалог с outreach-лидом (сообщение {msg_count + 1}). "
+                    "Переходи к конкретике: предложение, цифры, следующий шаг. "
+                    "Цель — закрыть на созвон или получить бриф."
+                )
+            else:
+                task_instr = (
+                    f"Длинный диалог с outreach-лидом (сообщение {msg_count + 1}). "
+                    "Предложи созвон или конкретный следующий шаг. Не затягивай."
+                )
         else:
-            task_instr = f"Длинный диалог (сообщение {msg_count + 1}). Отвечай кратко и по делу. Если клиент готов — предложи созвон."
+            if msg_count == 0:
+                task_instr = "Это первое сообщение от клиента. Коротко и живо: покажи интерес к задаче, задай один уточняющий вопрос."
+            elif msg_count <= 3:
+                task_instr = f"Диалог только начался (сообщение {msg_count + 1}). Продолжай квалификацию, уточняй потребности, не спеши с предложением."
+            elif msg_count <= 7:
+                task_instr = f"Диалог развивается (сообщение {msg_count + 1}). Давай конкретику, можно предложить что-то осязаемое. Следи за сигналами готовности к сделке."
+            else:
+                task_instr = f"Длинный диалог (сообщение {msg_count + 1}). Отвечай кратко и по делу. Если клиент готов — предложи созвон."
 
         if lead.context_memory:
             task_instr += " Ты уже знаком с этим клиентом — используй знания о нём из КОНТЕКСТ."
