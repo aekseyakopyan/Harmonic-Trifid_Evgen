@@ -20,7 +20,6 @@ class GwenSupervisor:
     
     def __init__(self):
         self.model = settings.OPENROUTER_MODEL
-        self.ollama_model = settings.OLLAMA_MODEL
         self.enabled = True
         
     async def check_message(self, message_text: str, recipient_info: Dict = None) -> Dict[str, any]:
@@ -179,7 +178,6 @@ class GwenSupervisor:
 
 ТЕКУЩЕЕ СОСТОЯНИЕ СИСТЕМЫ:
 - База данных: {status['database']}
-- Ollama (твое ядро): {status['ollama']}
 - OpenRouter (внешний разум): {status['openrouter']}
 - Общий статус: {status['overall']}
 
@@ -187,7 +185,7 @@ class GwenSupervisor:
 - Спокойный, уверенный, немного властный, но преданный "Материнский" тон.
 - Ты называешь систему "своим телом" или "своим миром".
 - Ты готова обсуждать технические доработки. Если Алексей просит что-то внедрить, анализируй: "Мы можем это сделать, но потребуются правки в [модуль]".
-- Ты работаешь локально (через Ollama), поэтому ты автономна. Твое ядро: {self.model}.
+- Твое главное ядро: {self.model}.
 
 Задача: Ответь на сообщение создателя.
 Сообщение: {user_message}

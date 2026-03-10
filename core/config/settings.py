@@ -78,10 +78,7 @@ class Settings(BaseSettings):
         "anthropic/claude-3.5-sonnet",
         "openai/gpt-4o"
     ]
-    
-    # Ollama Configuration
-    OLLAMA_URL: str = "http://localhost:11434/api/chat"
-    OLLAMA_MODEL: str = "qwen2.5:3b"
+
     
     OPENAI_API_KEY: str = ""  # For Whisper STT (optional)
 

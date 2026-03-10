@@ -23,33 +23,21 @@ class LLMClient:
 
     async def generate_response(self, prompt: str, system_prompt: str = "You are a helpful assistant.") -> Optional[str]:
         """
-        Generate a response using OpenRouter API with fallback models and local Ollama.
-        Automatically switches models on failure.
+        Generate a response using OpenRouter API.
+        Automatically switches to fallback models on failure.
         """
-        # Formulate list of models: Primary -> Fallback List -> Local Ollama
+        # Formulate list of models: Primary -> Fallback List
         models_to_try = [self.model] + settings.FALLBACK_MODELS
         models_to_try = list(dict.fromkeys(models_to_try))  # Dedup
         
-        # Add local Ollama as the last resort
-        ollama_model_id = f"ollama/{settings.OLLAMA_MODEL}"
-        models_to_try.append(ollama_model_id)
-
         last_error = None
         
         for model_name in models_to_try:
             try:
                 content = None
                 
-                # BRANCH 1: Local Ollama
-                if model_name.startswith("ollama/"):
-                    real_model = model_name.replace("ollama/", "")
-                    logger.info(f"🔄 Switching to LOCAL OLLAMA model: {real_model}")
-                    content = await self._generate_ollama(real_model, prompt, system_prompt)
-
-                # BRANCH 2: OpenRouter Cloud
-                else:
-                    logger.info(f"🔄 Trying Cloud Model: {model_name}")
-                    content = await self._generate_openrouter(model_name, prompt, system_prompt)
+                logger.info(f"🔄 Trying Cloud Model: {model_name}")
+                content = await self._generate_openrouter(model_name, prompt, system_prompt)
 
                 if content:
                     # Success!
@@ -63,7 +51,7 @@ class LLMClient:
                 last_error = e
                 # Continue to next model...
         
-        logger.error("🔥 All LLM models (Cloud + Local) failed to generate a response.")
+        logger.error("🔥 All LLM models failed to generate a response.")
         return None
 
     async def _generate_openrouter(self, model_name: str, prompt: str, system_prompt: str) -> Optional[str]:
@@ -98,72 +86,12 @@ class LLMClient:
             
             return None
 
-    async def _generate_ollama(self, model_name: str, prompt: str, system_prompt: str) -> Optional[str]:
-        # Force Russian instruction for Ollama locally if needed
-        full_prompt = prompt
-        if "отвечай только на русском" not in prompt.lower():
-            full_prompt = f"{prompt}\n\n[ОБЯЗАТЕЛЬНО: ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ, БЕЗ КАВЫЧЕК]"
-
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_prompt}
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.6,
-                "top_p": 0.8
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            try:
-                response = await client.post(
-                    settings.OLLAMA_URL,
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
-                content = data.get("message", {}).get("content", "")
-                
-                if content:
-                    # Post-process: Remove ALL types of quotes
-                    for quote in ['"', "'", "«", "»", "“", "”"]:
-                        content = content.replace(quote, "")
-                    content = content.strip()
-                    
-                    # Detect if it's still English (Jessica syndrome)
-                    latin_chars = sum(1 for c in content[:100] if 'a' <= c.lower() <= 'z')
-                    if latin_chars > 15 and len(content) > 20:
-                        logger.warning(f"⚠️ Detected English bias in response from {model_name}. Retrying with absolute language lock...")
-                        # Final attempt: Very short, aggressive instruction
-                        payload["messages"][1]["content"] = f"ПИШИ ТОЛЬКО НА РУССКОМ. НИКАКОГО АНГЛИЙСКОГО. БЕЗ КАВЫЧЕК. ТЕМА: {prompt[:100]}"
-                        payload["options"]["temperature"] = 0.3 # Reduce randomness
-                        response = await client.post(settings.OLLAMA_URL, json=payload)
-                        data = response.json()
-                        content = data.get("message", {}).get("content", "").strip()
-                        for quote in ['"', "'", "«", "»", "“", "”"]:
-                            content = content.replace(quote, "")
-
-                return content
-            except httpx.ConnectError:
-                raise Exception("Ollama connection refused (Is it running?)")
-
     async def call_api(self, model: str, prompt: str, text: str, timeout: float = 10.0) -> dict:
         """Structured call to OpenRouter with integrated parsing."""
         system_prompt = "Ты — экспертный фильтр лидов. Отвечай только СТРОГО валидным JSON."
         full_prompt = f"{prompt}\n\nТЕКСТ СООБЩЕНИЯ:\n{text}"
         
         response = await self._generate_openrouter(model, full_prompt, system_prompt)
-        return self._parse_json_safe(response)
-
-    async def call_ollama(self, prompt: str, text: str, timeout: float = 10.0) -> dict:
-        """Structured call to local Ollama with integrated parsing."""
-        system_prompt = "Ты — экспертный фильтр лидов. Отвечай только СТРОГО валидным JSON."
-        full_prompt = f"{prompt}\n\nТЕКСТ СООБЩЕНИЯ:\n{text}"
-        
-        response = await self._generate_ollama(settings.OLLAMA_MODEL, full_prompt, system_prompt)
         return self._parse_json_safe(response)
 
     def _parse_json_safe(self, text: Optional[str]) -> dict:

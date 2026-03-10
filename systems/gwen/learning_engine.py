@@ -212,14 +212,10 @@ class GwenLearningEngine:
         Ответь кратко (до 10 слов).
         """
         try:
-            # Сначала пробуем Ollama
-            reason = await llm_client._generate_ollama(settings.OLLAMA_MODEL, prompt, "Ты — аналитик лидов.")
-            if not reason or "error" in reason.lower() or "connection" in reason.lower():
-                raise ConnectionError("Ollama is unavailable")
+            reason = await llm_client.generate_response(prompt, system_prompt="Ты — аналитик лидов. Отвечай кратко.")
             
-            # Если Ollama сработала, извлекаем ключевые слова
             extraction_prompt = f"Извлеки из текста выше 1–2 ключевых слова/фразы, которые делают его релевантным. Ответь только словами через запятую.\nТекст: {text[:200]}"
-            keywords = await llm_client._generate_ollama(settings.OLLAMA_MODEL, extraction_prompt, "Ты — экстрактор ключевых слов.")
+            keywords = await llm_client.generate_response(extraction_prompt, system_prompt="Ты — экстрактор ключевых слов. Отвечай только списком через запятую.")
             
             if keywords and len(keywords) < 50:
                 new_kw = [k.strip().lower() for k in keywords.split(',') if len(k.strip()) > 3]
@@ -230,13 +226,8 @@ class GwenLearningEngine:
             return reason or "Одобрено пользователем"
 
         except Exception as e:
-            logger.warning(f"⚠️ Ollama fail in approval analysis: {e}. Switching to Cloud...")
-            # Fallback на OpenRouter
-            try:
-                reason = await llm_client.generate_response(prompt, system_prompt="Ты — аналитик лидов. Отвечай кратко.")
-                return reason or "Одобрено (Cloud)"
-            except Exception as e:  
-                return "Одобрено пользователем"
+            logger.warning(f"⚠️ Fallback to default reason: {e}")
+            return "Одобрено пользователем"
 
     async def analyze_spam_with_feedback(self, text: str, user_reason: str) -> str:
         """
@@ -256,19 +247,7 @@ class GwenLearningEngine:
         Ответишь только списком слов через запятую. Если подтверждения нет, ответь "None".
         """
         try:
-            # Пробуем Ollama с коротким таймаутом
-            keywords = None
-            try:
-                keywords = await asyncio.wait_for(
-                    llm_client._generate_ollama(settings.OLLAMA_MODEL, prompt, "Ты — эксперт по фильтрации спама."),
-                    timeout=5.0
-                )
-            except Exception as e:  
-                logger.warning("Ollama timeout/fail in feedback analysis, switching to Cloud.")
-            
-            # Fallback на Cloud если Ollama тупит
-            if not keywords or "error" in keywords.lower() or "connection" in keywords.lower():
-                keywords = await llm_client.generate_response(prompt, system_prompt="Ты — эксперт по спаму. Отвечай только списком ключевых слов.")
+            keywords = await llm_client.generate_response(prompt, system_prompt="Ты — эксперт по спаму. Отвечай только списком ключевых слов.")
 
             if keywords and "none" not in keywords.lower() and len(keywords) < 100:
                 new_kw = [k.strip().lower() for k in keywords.split(',') if len(k.strip()) > 3]
