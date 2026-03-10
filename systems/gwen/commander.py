@@ -57,13 +57,7 @@ class GwenCommander:
             return
 
         try:
-            if start_bot:
-                # NOTE: Bot commands now handled by Aiogram bot.py, not Telethon.
-                # Commander используется только в режиме start_bot=False.
-                logger.warning("⚠️ start_bot=True is deprecated. Use Aiogram bot.py instead.")
-                self.bot_client = None
-            else:
-                logger.info("🧠 Gwen Commander starting in Orchestrator mode (tasks only).")
+            logger.info("🧠 Gwen Commander starting in Orchestrator mode (tasks only).")
             
             # Фоновый мониторинг здоровья (ВСЕГДА ЗАПУСКАЕМ)
             self.service_states = {"database": True, "ollama": True, "openrouter": True}
@@ -77,9 +71,6 @@ class GwenCommander:
             
             # Фоновое самообучение фильтрам (раз в сутки в 2:00 МСК)
             asyncio.create_task(self._run_learning_loop())
-            
-        except Exception as e:
-            logger.error(f"Failed to start Gwen Commander: {e}")
             
         except Exception as e:
             logger.error(f"Failed to start Gwen Commander: {e}")
@@ -203,14 +194,45 @@ class GwenCommander:
                         conn.commit()
                         conn.close()
                         continue
-                    
+
+                    # АВТОГЕНЕРАЦИЯ ЧЕРНОВИКА если его нет
+                    if not v_draft:
+                        logger.info(f"📝 Черновик отсутствует для {v_hash[:8]}, генерирую...")
+                        try:
+                            v_draft = await outreach_generator.generate_draft(
+                                v_dict.get('text', ''), v_dict.get('direction', 'Digital Marketing')
+                            )
+                            if v_draft:
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
+                                conn.commit()
+                                conn.close()
+                                logger.info(f"✅ Черновик сгенерирован для {v_hash[:8]}")
+                            else:
+                                logger.info(f"⏭ Не удалось сгенерировать черновик: {v_hash[:8]}")
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                cursor = conn.cursor()
+                                cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
+                                conn.commit()
+                                conn.close()
+                                continue
+                        except Exception as draft_err:
+                            logger.error(f"Draft generation failed for {v_hash[:8]}: {draft_err}")
+                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
+                            conn.commit()
+                            conn.close()
+                            continue
+
                     # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00)
                     cur_hour = datetime.now().hour
                     if settings.AUTO_OUTREACH and not (8 <= cur_hour < 23):
                         logger.info(f"⏸ Вне рабочего времени ({cur_hour}:00). Авто-отклик отложен до 8:00.")
                         continue
 
-                    if settings.AUTO_OUTREACH and v_contact and v_draft:
+                    if settings.AUTO_OUTREACH:
                         try:
                             target = v_contact.split('/')[-1].replace('@', '').strip()
                             
@@ -319,8 +341,7 @@ class GwenCommander:
                             except Exception as db_err:
                                 logger.error(f"Failed to log auto-outreach to bot_data.db: {db_err}")
 
-                            v_dict['status_message'] = "✅ ОТПРАВЛЕНО АВТОМАТИЧЕСКИ"
-                            await supervisor_notifier.notify_new_vacancy(v_dict)
+                            logger.info(f"✅ Авто-отклик отправлен: {v_contact}")
                             
                         except errors.FloodWait as e:
                             logger.warning(f"⏳ FloodWait: нужно подождать {e.value} сек.")
@@ -368,12 +389,11 @@ class GwenCommander:
                                 conn.close()
                             except Exception as db_err:
                                 logger.error(f"Failed to mark lead as failed: {db_err}")
-                            v_dict['status_message'] = f"❌ ОШИБКА АВТО-ОТПРАВКИ: {str(e)}"
-                            await supervisor_notifier.notify_new_vacancy(v_dict)
+                            await supervisor_notifier.send_error(f"❌ Авто-отклик не отправлен → {v_contact}\n{str(e)}")
                     else:
-                        # Ручной режим (как было раньше)
+                        # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
-                        
+
                         # Помечаем как "уведомлен"
                         conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                         cursor = conn.cursor()

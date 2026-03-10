@@ -194,18 +194,38 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
 
         # 4. Prompt
         tone = classification.get("tone", "neutral")
-        if "hurry" in tone:
+        msg_count = len(history_msgs)
+        text_lower = full_text.lower()
+
+        if "hurry" in tone or "срочно" in text_lower or "быстро" in text_lower:
             current_emotion = "interested"
-        elif tone == "negative":
+        elif any(w in text_lower for w in ["сколько стоит", "цена", "прайс", "бюджет", "стоимость"]) and msg_count >= 3:
+            current_emotion = "intrigued"
+        elif tone == "negative" and msg_count > 0:
             current_emotion = "skeptical"
-        elif tone == "positive":
+        elif tone == "positive" or (msg_count > 5 and tone != "negative"):
             current_emotion = "interested"
-        elif len(history_msgs) > 5:
-            current_emotion = "interested"
+        elif msg_count > 8:
+            current_emotion = "tired"
+        elif classification.get("category") not in ["seo", "ppc", "avito", "smm", "marketing", "general", None]:
+            current_emotion = "uncertain"
+        elif full_text.strip().endswith("?") and msg_count >= 2:
+            current_emotion = "intrigued"
         else:
             current_emotion = "skeptical"
 
-        task_instr = "Ты — Алексей, отвечаешь клиенту в личной переписке. Дай живой, экспертный ответ."
+        if msg_count == 0:
+            task_instr = "Это первое сообщение от клиента. Коротко и живо: покажи интерес к задаче, задай один уточняющий вопрос."
+        elif msg_count <= 3:
+            task_instr = f"Диалог только начался (сообщение {msg_count + 1}). Продолжай квалификацию, уточняй потребности, не спеши с предложением."
+        elif msg_count <= 7:
+            task_instr = f"Диалог развивается (сообщение {msg_count + 1}). Давай конкретику, можно предложить что-то осязаемое. Следи за сигналами готовности к сделке."
+        else:
+            task_instr = f"Длинный диалог (сообщение {msg_count + 1}). Отвечай кратко и по делу. Если клиент готов — предложи созвон."
+
+        if lead.context_memory:
+            task_instr += " Ты уже знаком с этим клиентом — используй знания о нём из КОНТЕКСТ."
+
         system_prompt = prompt_builder.build_system_prompt(task_instr)
         user_prompt = prompt_builder.build_user_prompt(
             query=full_text,
@@ -218,7 +238,8 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             context_memory=lead.context_memory,
             history_text=history_text,
             current_emotion=current_emotion,
-            sales_materials=sales_materials
+            sales_materials=sales_materials,
+            message_count=msg_count + 1
         )
 
         # 5. LLM Generation Loop with Supervisor

@@ -29,7 +29,8 @@ class PromptBuilder:
         context_memory: Optional[str] = None,
         history_text: Optional[str] = None,
         current_emotion: str = "skeptical",
-        sales_materials: List[dict] = None
+        sales_materials: List[dict] = None,
+        message_count: int = 1
     ) -> str:
         context = ""
         
@@ -64,11 +65,12 @@ class PromptBuilder:
         emotion_description = EMOTIONS.get(current_emotion, EMOTIONS["skeptical"])
             
         return USER_PROMPT_TEMPLATE.format(
-            context=context, 
+            context=context,
             query=query,
             user_name=user_name,
             conversation_history=history_text or "Нет предыдущих сообщений",
-            current_emotion=emotion_description
+            current_emotion=emotion_description,
+            message_count=message_count
         )
 
     @staticmethod
