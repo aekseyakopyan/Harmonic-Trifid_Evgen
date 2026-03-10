@@ -60,7 +60,7 @@ class GwenCommander:
             logger.info("🧠 Gwen Commander starting in Orchestrator mode (tasks only).")
             
             # Фоновый мониторинг здоровья (ВСЕГДА ЗАПУСКАЕМ)
-            self.service_states = {"database": True, "ollama": True, "openrouter": True}
+            self.service_states = {"database": True, "openrouter": True}
             asyncio.create_task(self.health_check_loop())
             
             # Фоновый мониторинг бэклога задач
@@ -117,7 +117,7 @@ class GwenCommander:
                 # Если AUTO_OUTREACH выключен, мы работаем в режиме "по одному лиду на подтверждение"
                 if not settings.AUTO_OUTREACH:
                     # Используем одно соединение для проверки и возможных действий (избегаем race condition)
-                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                     cursor = conn.cursor()
                     cursor.execute("SELECT COUNT(*) FROM vacancies WHERE response = 'notified'")
                     pending_count = cursor.fetchone()[0]
@@ -130,7 +130,7 @@ class GwenCommander:
                         continue
 
                 # 2. Находим вакансии, о которых еще не уведомляли
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -172,7 +172,7 @@ class GwenCommander:
                                         v_contact = user.username if user.username else str(user.id)
                                         logger.info(f"✨ Контакт восстановлен! {v_contact}")
                                         # Сохраняем для будущего
-                                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                         cursor = conn.cursor()
                                         cursor.execute("UPDATE vacancies SET contact_link = ?, chat_id = ? WHERE hash = ?", (v_contact, chat_id if isinstance(chat_id, int) else None, v_hash))
                                         conn.commit()
@@ -188,7 +188,7 @@ class GwenCommander:
 
                     if not v_contact:
                         logger.info(f"⏭ Пропуск лида без контакта: {v_hash[:8]}...")
-                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                         conn.commit()
@@ -203,7 +203,7 @@ class GwenCommander:
                                 v_dict.get('text', ''), v_dict.get('direction', 'Digital Marketing')
                             )
                             if v_draft:
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                 cursor = conn.cursor()
                                 cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
                                 conn.commit()
@@ -211,7 +211,7 @@ class GwenCommander:
                                 logger.info(f"✅ Черновик сгенерирован для {v_hash[:8]}")
                             else:
                                 logger.info(f"⏭ Не удалось сгенерировать черновик: {v_hash[:8]}")
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                 cursor = conn.cursor()
                                 cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
                                 conn.commit()
@@ -219,7 +219,7 @@ class GwenCommander:
                                 continue
                         except Exception as draft_err:
                             logger.error(f"Draft generation failed for {v_hash[:8]}: {draft_err}")
-                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                             cursor = conn.cursor()
                             cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
                             conn.commit()
@@ -273,7 +273,7 @@ class GwenCommander:
 
                             if is_duplicate:
                                 # Помечаем как пропущенный дубликат
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                 cursor = conn.cursor()
                                 cursor.execute("UPDATE vacancies SET response = 'skipped_duplicate' WHERE hash = ?", (v_hash,))
                                 conn.commit()
@@ -284,7 +284,7 @@ class GwenCommander:
                             sent_msg = await self.main_client.send_message(target, v_draft)
                             
                             # Успешная отправка
-                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                             cursor = conn.cursor()
                             cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                             conn.commit()
@@ -371,7 +371,7 @@ class GwenCommander:
                                 return # Выходим из цикла
                             else:
                                 # Ограничений нет, значит это просто приватность пользователя или невалидный ID
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                 cursor = conn.cursor()
                                 cursor.execute("UPDATE vacancies SET response = 'failed_privacy' WHERE hash = ?", (v_hash,))
                                 conn.commit()
@@ -382,7 +382,7 @@ class GwenCommander:
                             logger.error(f"Auto-outreach failed for {v_contact}: {e}")
                             # Помечаем лид как failed чтобы не зациклиться
                             try:
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                                 cursor = conn.cursor()
                                 cursor.execute("UPDATE vacancies SET response = 'failed' WHERE hash = ?", (v_hash,))
                                 conn.commit()
@@ -395,7 +395,7 @@ class GwenCommander:
                         await supervisor_notifier.notify_new_vacancy(v_dict)
 
                         # Помечаем как "уведомлен"
-                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                         cursor = conn.cursor()
                         cursor.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
                         conn.commit()
@@ -587,7 +587,7 @@ class GwenCommander:
         if event.sender_id in self.waiting_for_reason:
             v_hash = self.waiting_for_reason.pop(event.sender_id)
             import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
             cursor = conn.cursor()
             
             # Получаем текст вакансии для анализа
@@ -742,8 +742,7 @@ class GwenCommander:
         status_text = (
             f"🩺 <b>Отчет о состоянии систем:</b>\n\n"
             f"{'✅' if status['database'] == 'OK' else '❌'} <b>База данных:</b> {status['database']}\n"
-            f"{'☁️' if status['openrouter'] == 'OK' else '❌'} <b>OpenRouter (Cloud):</b> {status['openrouter']}\n"
-            f"{'💤' if status['ollama'] == 'OK' else '🔘'} <b>Ollama (Local):</b> {status['ollama']} <i>(optional)</i>\n\n"
+            f"{'☁️' if status['openrouter'] == 'OK' else '❌'} <b>OpenRouter (Cloud):</b> {status['openrouter']}\n\n"
             f"🏁 <b>Общий статус:</b> {status['overall']}"
         )
         await event.respond(status_text, parse_mode='html')
@@ -759,7 +758,7 @@ class GwenCommander:
             
             # 2. Статистика по парсеру (SQLite)
             import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
             cursor = conn.cursor()
             cursor.execute("SELECT status, COUNT(*) FROM vacancies GROUP BY status")
             v_stats = dict(cursor.fetchall())
@@ -844,7 +843,7 @@ class GwenCommander:
             from systems.gwen.learning_engine import gwen_learning_engine
             # Пытаемся найти текст сообщения в базе для анализа
             import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
             cursor = conn.cursor()
             cursor.execute("SELECT text FROM vacancies WHERE contact_link LIKE ? ORDER BY last_seen DESC LIMIT 1", (f'%{target}%',))
             row = cursor.fetchone()
@@ -885,7 +884,7 @@ class GwenCommander:
         
         if action in ["ignore", "block", "duplicate"]:
             import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
             cursor = conn.cursor()
             
             # Получаем данные вакансии
@@ -942,7 +941,7 @@ class GwenCommander:
         # Для Send и Edit нужна информация из БД
         import sqlite3
         try:
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
             cursor = conn.cursor()
             cursor.execute("SELECT text, draft_response, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
             vacancy = cursor.fetchone()
@@ -978,7 +977,7 @@ class GwenCommander:
             if not v_contact or v_contact == "Не найден":
                 await event.answer("⚠️ Контакт не найден.", alert=True)
                 # Помечаем как accepted, но без отправки
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                 cursor = conn.cursor()
                 cursor.execute("UPDATE vacancies SET status = 'accepted', response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                 conn.commit()
@@ -1023,7 +1022,7 @@ class GwenCommander:
                         return
                     
                     # Сохраняем черновик
-                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                     cursor = conn.cursor()
                     cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
                     conn.commit()
@@ -1053,7 +1052,7 @@ class GwenCommander:
                 await event.edit(f"✅ <b>Отправлено в {v_contact}</b>\n🧐 <b>Анализ Гвен:</b> {analysis_reason}\n\n{v_draft}", parse_mode='html')
                 
                 # Помечаем в базе как отправленное
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
+                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                 cursor = conn.cursor()
                 cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                 conn.commit()
