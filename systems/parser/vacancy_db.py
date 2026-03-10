@@ -140,7 +140,8 @@ class VacancyDatabase:
         return False
     
     async def add_accepted(self, text: str, source: str, direction: str = None, 
-                           contact_link: str = None, date: Optional[str] = None) -> bool:
+                           contact_link: str = None, date: Optional[str] = None,
+                           message_id: Optional[int] = None, chat_id: Optional[int] = None) -> bool:
         """Добавляет принятую вакансию в базу."""
         vacancy_hash = self._generate_hash(text)
         if date is None:
@@ -149,9 +150,9 @@ class VacancyDatabase:
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute("""
-                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
-                    VALUES (?, 'accepted', ?, ?, ?, ?, NULL, NULL, ?, ?)
-                """, (vacancy_hash, text, source, direction, contact_link, date, date))
+                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen, message_id, chat_id)
+                    VALUES (?, 'accepted', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                """, (vacancy_hash, text, source, direction, contact_link, date, date, message_id, chat_id))
                 await db.commit()
                 return True
             except aiosqlite.IntegrityError:
@@ -161,7 +162,8 @@ class VacancyDatabase:
                 await db.commit()
                 return False
     
-    async def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None) -> bool:
+    async def add_rejected(self, text: str, source: str, reason: str, date: Optional[str] = None,
+                           message_id: Optional[int] = None, chat_id: Optional[int] = None) -> bool:
         """Добавляет отклонённую вакансию в базу."""
         vacancy_hash = self._generate_hash(text)
         if date is None:
@@ -170,9 +172,9 @@ class VacancyDatabase:
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 await db.execute("""
-                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen)
-                    VALUES (?, 'rejected', ?, ?, NULL, NULL, NULL, ?, ?, ?)
-                """, (vacancy_hash, text, source, reason, date, date))
+                    INSERT INTO vacancies (hash, status, text, source, direction, contact_link, response, rejection_reason, first_seen, last_seen, message_id, chat_id)
+                    VALUES (?, 'rejected', ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
+                """, (vacancy_hash, text, source, reason, date, date, message_id, chat_id))
                 await db.commit()
                 return True
             except aiosqlite.IntegrityError:

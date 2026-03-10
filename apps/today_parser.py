@@ -271,7 +271,15 @@ class TelegramVacancyParser:
                 # Сохраняем в базу данных как принятую с направлением и контактом
                 direction = analysis.get('specialization', 'Не определено')
                 contact_link = contact_data.get('contact_link')
-                await self.db.add_accepted(text, channel_name, direction, contact_link, message.date.isoformat())
+                await self.db.add_accepted(
+                    text=text, 
+                    source=channel_name, 
+                    direction=direction, 
+                    contact_link=contact_link, 
+                    date=message.date.isoformat(),
+                    message_id=message.id,
+                    chat_id=message.chat.id
+                )
                 
                 # Немедленная отправка первого сообщения лиду
                 await self._send_outreach_to_lead(contact_link, text, direction)
@@ -293,10 +301,12 @@ class TelegramVacancyParser:
                 # Сохраняем в базу данных как отклонённую
                 if analysis.get('rejection_reason'):
                     await self.db.add_rejected(
-                        text,
-                        channel_name,
-                        analysis.get('rejection_reason'),
-                        message.date.isoformat()
+                        text=text,
+                        source=channel_name,
+                        reason=analysis.get('rejection_reason'),
+                        date=message.date.isoformat(),
+                        message_id=message.id,
+                        chat_id=message.chat.id
                     )
             
             # Сохраняем ВООБЩЕ ВСЕ для полного дампа
