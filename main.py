@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import sys
-import os
 from pathlib import Path
 
 # Добавляем корень проекта в пути импорта
@@ -33,13 +32,13 @@ def run_parser_history():
     asyncio.run(main())
 
 def run_gwen():
-    """Запуск Гвен (Коммандер/Уведомления)."""
-    from systems.gwen.commander import main
+    """Запуск полного стека: юзербот Алексей + Гвен Commander."""
+    from systems.alexey.main import main as alexey_main
     from core.knowledge_base.seeder import seed_if_empty
 
     async def _main():
         await seed_if_empty(str(settings.DATABASE_PATH))
-        await main()
+        await alexey_main()
 
     asyncio.run(_main())
 

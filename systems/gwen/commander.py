@@ -68,9 +68,15 @@ class GwenCommander:
             
             # Фоновый мониторинг новых вакансий для Outreach
             asyncio.create_task(self._run_outreach_monitor())
-            
+
             # Фоновое самообучение фильтрам (раз в сутки в 2:00 МСК)
             asyncio.create_task(self._run_learning_loop())
+
+            # Утренний отчёт в 9:00
+            asyncio.create_task(self._run_daily_report_loop())
+
+            # Ретроспективная рассылка по старым лидам из history_buyer_leads.db
+            asyncio.create_task(self._run_history_leads_outreach())
             
         except Exception as e:
             logger.error(f"Failed to start Gwen Commander: {e}")
@@ -193,6 +199,16 @@ class GwenCommander:
                         cursor.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                         conn.commit()
                         conn.close()
+                        try:
+                            preview = (v_dict.get('text') or '')[:80]
+                            await self.main_client.send_message("me",
+                                f"⚠️ <b>Пропуск — нет контакта</b>\n"
+                                f"🆔 {v_hash[:8]} | 📁 {v_dict.get('source', '—')}\n"
+                                f"<i>{preview}</i>",
+                                parse_mode="html"
+                            )
+                        except Exception:
+                            pass
                         continue
 
                     # АВТОГЕНЕРАЦИЯ ЧЕРНОВИКА если его нет
@@ -342,7 +358,17 @@ class GwenCommander:
                                 logger.error(f"Failed to log auto-outreach to bot_data.db: {db_err}")
 
                             logger.info(f"✅ Авто-отклик отправлен: {v_contact}")
-                            
+                            try:
+                                snippet = v_draft[:200] + ("…" if len(v_draft) > 200 else "")
+                                await self.main_client.send_message("me",
+                                    f"✅ <b>Отклик отправлен</b>\n"
+                                    f"👤 {v_contact} | 🏷 {v_tier}\n\n"
+                                    f"<i>{snippet}</i>",
+                                    parse_mode="html"
+                                )
+                            except Exception:
+                                pass
+
                         except errors.FloodWait as e:
                             logger.warning(f"⏳ FloodWait: нужно подождать {e.value} сек.")
                             if e.value > 180: # Если ждать больше 3 минут
@@ -390,6 +416,15 @@ class GwenCommander:
                             except Exception as db_err:
                                 logger.error(f"Failed to mark lead as failed: {db_err}")
                             await supervisor_notifier.send_error(f"❌ Авто-отклик не отправлен → {v_contact}\n{str(e)}")
+                            try:
+                                await self.main_client.send_message("me",
+                                    f"❌ <b>Ошибка отправки</b>\n"
+                                    f"👤 {v_contact}\n"
+                                    f"<code>{str(e)[:150]}</code>",
+                                    parse_mode="html"
+                                )
+                            except Exception:
+                                pass
                     else:
                         # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
@@ -431,23 +466,6 @@ class GwenCommander:
                             f"📝 <b>Обоснование:</b>\n<i>{report['reason']}</i>"
                         )
                         await supervisor_notifier.send_error(msg)
-                    
-                    # Генерируем ежедневный отчет за вчерашний день
-                    from systems.parser.report_generator import report_generator
-                    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-                    daily_report = report_generator.generate_daily_report(yesterday)
-                    
-                    if daily_report.get("status") == "success":
-                        metrics = daily_report['metrics']
-                        report_msg = (
-                            f"📊 <b>Ежедневный отчет: {metrics['date']}</b>\n\n"
-                            f"• Всего сообщений: {metrics['total_messages']}\n"
-                            f"• ✅ Одобрено: {metrics['accepted']} ({metrics['acceptance_rate']}%)\n"
-                            f"• ❌ Отклонено: {metrics['rejected']}\n"
-                            f"• 🚀 Отправлено откликов: {metrics['sent_responses']}\n\n"
-                            f"📄 Отчет: <code>{daily_report['path']}</code>"
-                        )
-                        await supervisor_notifier.send_error(report_msg)
                     
                     # Ждем до следующего часа, чтобы не спамить обучением в течении этого получаса
                     await asyncio.sleep(3600)
@@ -1070,6 +1088,202 @@ class GwenCommander:
         """Обработка свободного общения с Гвен."""
         # USER REQUEST: Отключен модуль общения. Гвен теперь молчит на обычные сообщения.
         return
+
+    async def _build_morning_report(self) -> str:
+        """Формирует текст утреннего отчёта из vacancies.db и bot_data.db."""
+        from datetime import datetime, timedelta, timezone
+        try:
+            since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+            # --- vacancies.db ---
+            conn_v = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
+            cur = conn_v.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM vacancies WHERE status='accepted' AND last_seen >= ?", (since,))
+            accepted_24h = (cur.fetchone() or [0])[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM vacancies
+                WHERE status='accepted'
+                  AND response IS NOT NULL AND response != ''
+                  AND response NOT IN ('no_contact_skip','no_draft_skip','notified','failed','failed_privacy','skipped_duplicate')
+                  AND last_seen >= ?
+            """, (since,))
+            sent_24h = (cur.fetchone() or [0])[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM vacancies
+                WHERE status='accepted'
+                  AND draft_response IS NOT NULL AND draft_response != ''
+                  AND (response IS NULL OR response = '')
+            """)
+            pending_drafts = (cur.fetchone() or [0])[0]
+
+            cur.execute("""
+                SELECT COUNT(*) FROM vacancies
+                WHERE status='accepted'
+                  AND response = 'no_contact_skip'
+            """)
+            no_contact = (cur.fetchone() or [0])[0]
+
+            cur.execute("""
+                SELECT direction, text, contact_link
+                FROM vacancies
+                WHERE status='accepted'
+                  AND (response IS NULL OR response = '')
+                ORDER BY priority DESC, last_seen DESC
+                LIMIT 5
+            """)
+            top_orders = cur.fetchall()
+            conn_v.close()
+
+            # --- bot_data.db ---
+            try:
+                conn_b = sqlite3.connect(str(settings.DATABASE_PATH), timeout=10)
+                cur_b = conn_b.cursor()
+                cur_b.execute(
+                    "SELECT COUNT(*) FROM message_logs WHERE direction='incoming' AND created_at >= ?",
+                    (since,)
+                )
+                incoming_msgs = (cur_b.fetchone() or [0])[0]
+                conn_b.close()
+            except Exception:
+                incoming_msgs = "—"
+
+            # --- Форматирование ---
+            today = datetime.now().strftime("%d.%m.%Y")
+            orders_block = ""
+            if top_orders:
+                lines = []
+                for i, (direction, text, contact) in enumerate(top_orders, 1):
+                    preview = (text or "")[:60].replace("\n", " ")
+                    contact_str = contact or "нет контакта"
+                    lines.append(f"  {i}. [{direction or '?'}] {preview}… → {contact_str}")
+                orders_block = "\n📋 <b>Ожидают отклика (топ-5):</b>\n" + "\n".join(lines)
+
+            report = (
+                f"📊 <b>Утренний отчёт — {today}</b>\n\n"
+                f"📥 <b>Вакансии за сутки:</b>\n"
+                f"  ✅ Принятых: {accepted_24h}\n"
+                f"  🚀 Отправлено откликов: {sent_24h}\n"
+                f"  ⏳ Ожидают (черновик готов): {pending_drafts}\n"
+                f"  ⚠️ Пропущено (нет контакта): {no_contact}\n\n"
+                f"💬 <b>Диалоги:</b>\n"
+                f"  📩 Новых сообщений от клиентов: {incoming_msgs}"
+                f"{orders_block}"
+            )
+            return report
+        except Exception as e:
+            logger.error(f"_build_morning_report error: {e}")
+            return f"📊 <b>Утренний отчёт</b>\n⚠️ Ошибка формирования: {e}"
+
+    async def _run_daily_report_loop(self):
+        """Отправляет утренний отчёт в 9:00 каждый день в Saved Messages."""
+        while True:
+            try:
+                now = datetime.now()
+                target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+                if now >= target:
+                    target += timedelta(days=1)
+                wait_sec = (target - now).total_seconds()
+                logger.info(f"📊 Следующий утренний отчёт через {int(wait_sec // 3600)}ч {int((wait_sec % 3600) // 60)}мин")
+                await asyncio.sleep(wait_sec)
+
+                report_text = await self._build_morning_report()
+                await self.main_client.send_message("me", report_text, parse_mode="html")
+                logger.info("📊 Утренний отчёт отправлен в Saved Messages")
+            except Exception as e:
+                logger.error(f"Daily report loop error: {e}")
+                await asyncio.sleep(3600)
+
+    async def _run_history_leads_outreach(self):
+        """Рассылка по старым лидам из history_buyer_leads.db (ретроспективные отклики)."""
+        from systems.parser.outreach_generator import outreach_generator
+        HISTORY_DB = str(settings.DB_DIR / "history_buyer_leads.db")
+        MAX_PER_DAY = 15
+        WORK_HOURS = (9, 21)
+
+        while True:
+            try:
+                now = datetime.now()
+                if not (WORK_HOURS[0] <= now.hour < WORK_HOURS[1]):
+                    await asyncio.sleep(1800)
+                    continue
+
+                # Идемпотентно добавляем колонку
+                conn = sqlite3.connect(HISTORY_DB, timeout=30)
+                try:
+                    conn.execute("ALTER TABLE history_leads ADD COLUMN outreach_sent_at TEXT")
+                    conn.commit()
+                except Exception:
+                    pass
+
+                # Считаем отправленные сегодня
+                today = now.strftime('%Y-%m-%d')
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM history_leads WHERE outreach_sent_at LIKE ?",
+                    (f"{today}%",)
+                ).fetchone()
+                sent_today = row[0] if row else 0
+
+                if sent_today >= MAX_PER_DAY:
+                    conn.close()
+                    await asyncio.sleep(3600)
+                    continue
+
+                leads = conn.execute("""
+                    SELECT id, text, direction, contact_link, source, date
+                    FROM history_leads
+                    WHERE contact_link IS NOT NULL AND contact_link != ''
+                      AND outreach_sent_at IS NULL
+                      AND score >= 3
+                    ORDER BY score DESC, found_at DESC
+                    LIMIT 3
+                """).fetchall()
+                conn.close()
+
+                if not leads:
+                    await asyncio.sleep(7200)
+                    continue
+
+                for lead in leads:
+                    lead_id, text, direction, contact_link, source, lead_date = lead
+                    direction = direction or "маркетинг / digital"
+                    draft = await outreach_generator.generate_draft(text, direction, is_followup=True)
+                    if not draft:
+                        continue
+
+                    target = contact_link.split('/')[-1].replace('@', '').strip()
+                    try:
+                        await self.main_client.send_message(target, draft)
+                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
+                        conn.execute(
+                            "UPDATE history_leads SET outreach_sent_at = ? WHERE id = ?",
+                            (datetime.now().isoformat(), lead_id)
+                        )
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"✅ History outreach → {contact_link}")
+                        try:
+                            snippet = draft[:150] + ("…" if len(draft) > 150 else "")
+                            await self.main_client.send_message("me",
+                                f"📬 <b>Ретроспективный отклик</b>\n"
+                                f"👤 {contact_link}\n"
+                                f"📁 {source or '—'} | {lead_date or '—'}\n\n"
+                                f"<i>{snippet}</i>",
+                                parse_mode="html"
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.error(f"History outreach failed → {contact_link}: {e}")
+
+                    pause = random.randint(90, 180)
+                    await asyncio.sleep(pause)
+
+            except Exception as e:
+                logger.error(f"_run_history_leads_outreach error: {e}")
+            await asyncio.sleep(1800)
 
     async def health_check_loop(self):
         """Цикл проверки здоровья систем Гвен."""
