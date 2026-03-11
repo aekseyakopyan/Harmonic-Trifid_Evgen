@@ -9,7 +9,6 @@ from typing import Optional, Dict
 from core.ai_engine.llm_client import llm_client
 from core.utils.logger import logger
 from core.config.settings import settings
-from systems.parser.lead_filter_advanced import filter_lead_advanced
 
 class OutreachGenerator:
     """Генератор откликов на основе ИИ."""
@@ -81,94 +80,60 @@ class OutreachGenerator:
             conn.close()
 
     async def process_new_vacancies(self):
-        """Находит вакансии без черновиков и генерирует их с предварительной проверкой."""
+        """Находит вакансии без черновиков и генерирует их. Без повторной LLM-валидации — вакансия уже прошла 7-уровневый фильтр."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        # Берем принятые вакансии за последние 24 часа без черновика
         cursor.execute("""
-            SELECT hash, text, direction, source, last_seen, message_id 
-            FROM vacancies 
-            WHERE status = 'accepted' AND draft_response IS NULL
+            SELECT hash, text, direction, source, last_seen, message_id, tier, priority
+            FROM vacancies
+            WHERE status = 'accepted' AND (draft_response IS NULL OR draft_response = '')
             ORDER BY last_seen DESC LIMIT 50
         """)
-        
         pending = cursor.fetchall()
         conn.close()
-        
+
         if not pending:
             return 0
-            
+
         from datetime import datetime, timezone
         import dateutil.parser
         now = datetime.now(timezone.utc)
         count = 0
-        
-        for v_hash, v_text, v_dir, v_source, last_seen, v_msg_id in pending:
-            # AI Check: Действительно ли это качественная вакансия?
-            filter_result = await filter_lead_advanced(v_text, v_source, v_dir, message_id=v_msg_id or 0, use_llm_for_uncertain=True)
-            is_valid = filter_result["is_lead"]
-            
-            if is_valid:
-                # Проверка на "старость" и "follow-up"
-                is_old = False
-                is_followup = False
-                try:
-                    dt = dateutil.parser.isoparse(last_seen)
-                    if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-                    age_seconds = (now - dt).total_seconds()
-                    
-                    if age_seconds > 259200: # 3 days
-                        is_followup = True
-                    elif age_seconds > 43200: # 12 hours
-                        is_old = True
-                except Exception:
-                    pass
 
-                # Выделяем тир и приоритет
-                tier = filter_result.get("tier", "WARM")
-                priority = filter_result.get("priority", 50)
+        for v_hash, v_text, v_dir, v_source, last_seen, v_msg_id, v_tier, v_priority in pending:
+            # Нет повторной валидации — доверяем первичному фильтру
+            is_old, is_followup = False, False
+            try:
+                dt = dateutil.parser.isoparse(last_seen)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age = (now - dt).total_seconds()
+                is_followup = age > 259200   # 3 дня
+                is_old = not is_followup and age > 43200  # 12 часов
+            except Exception:
+                pass
 
-                count += 1
-                # Генерируем реальный черновик через LLM
-                draft = await self.generate_draft(v_text, v_dir, is_old=is_old, is_followup=is_followup)
-                
-                if draft:
-                    # Сохраняем реальный черновик
-                    conn = sqlite3.connect(self.db_path)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "UPDATE vacancies SET draft_response = ?, tier = ?, priority = ? WHERE hash = ?", 
-                        (draft, tier, priority, v_hash)
-                    )
-                    conn.commit()
-                    conn.close()
-                    logger.info(f"✅ Черновик сгенерирован для {v_hash[:8]}... (tier={tier})")
-                else:
-                    # LLM недоступен — ставим SKIPPED как fallback
-                    conn = sqlite3.connect(self.db_path)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "UPDATE vacancies SET draft_response = 'SKIPPED', tier = ?, priority = ? WHERE hash = ?", 
-                        (tier, priority, v_hash)
-                    )
-                    conn.commit()
-                    conn.close()
-                    logger.warning(f"⚠️ LLM недоступен, черновик помечен как SKIPPED для {v_hash[:8]}...")
-            else:
-                logger.warning(f"🚫 Гвен пометила вакансию как мусор/спам: {v_hash}")
-                # Помечаем как rejected, чтобы больше не обрабатывать
+            # Fallback direction если не определено
+            direction = v_dir or "маркетинг / digital"
+
+            draft = await self.generate_draft(v_text, direction, is_old=is_old, is_followup=is_followup)
+
+            if draft:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
                 cursor.execute(
-                    "UPDATE vacancies SET status = 'rejected', rejection_reason = ?, tier = 'COLD', priority = 0 WHERE hash = ?", 
-                    (filter_result.get("reason", "Advanced AI Filter Reject"), v_hash)
+                    "UPDATE vacancies SET draft_response = ? WHERE hash = ?",
+                    (draft, v_hash)
                 )
                 conn.commit()
                 conn.close()
-                
+                logger.info(f"✅ Черновик для {v_hash[:8]}... (dir={direction})")
+                count += 1
+            else:
+                logger.warning(f"⚠️ LLM недоступен для {v_hash[:8]}...")
+
             await asyncio.sleep(0.1)
-        
+
         return count
 
 

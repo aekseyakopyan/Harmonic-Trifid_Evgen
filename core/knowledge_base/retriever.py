@@ -3,6 +3,19 @@ from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database.models import Case, Service, FAQ
 
+CATEGORY_TO_SERVICE_NAME = {
+    "seo": "SEO",
+    "SEO": "SEO",
+    "контекстная реклама": "Яндекс.Директ",
+    "ppc": "Яндекс.Директ",
+    "авито": "Авито",
+    "разработка сайтов": "Разработка",
+    "маркетинг": "SEO",
+    "интернет-маркетинг": "SEO",
+    "веб-дизайн": "Разработка",
+}
+
+
 class KnowledgeRetriever:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -33,7 +46,8 @@ class KnowledgeRetriever:
         return list(result.scalars().all())
 
     async def find_service_by_category(self, category: str) -> Optional[Service]:
-        stmt = select(Service).where(Service.name.ilike(f"%{category}%"))
+        service_name = CATEGORY_TO_SERVICE_NAME.get(category, category)
+        stmt = select(Service).where(Service.name.ilike(f"%{service_name}%"))
         result = await self.session.execute(stmt)
         return result.scalars().first()
 

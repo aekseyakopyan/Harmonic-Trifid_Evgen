@@ -19,7 +19,13 @@ def run_monitor():
 def run_parser_today():
     """Запуск ежедневного парсера."""
     from apps.today_parser import main
-    asyncio.run(main())
+    from core.knowledge_base.seeder import seed_if_empty
+
+    async def _main():
+        await seed_if_empty(str(settings.DATABASE_PATH))
+        await main()
+
+    asyncio.run(_main())
 
 def run_parser_history():
     """Запуск исторического парсера."""
@@ -29,7 +35,13 @@ def run_parser_history():
 def run_gwen():
     """Запуск Гвен (Коммандер/Уведомления)."""
     from systems.gwen.commander import main
-    asyncio.run(main())
+    from core.knowledge_base.seeder import seed_if_empty
+
+    async def _main():
+        await seed_if_empty(str(settings.DATABASE_PATH))
+        await main()
+
+    asyncio.run(_main())
 
 def run_celery_worker():
     """Запуск Celery worker через CLI."""
