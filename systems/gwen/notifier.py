@@ -197,6 +197,42 @@ class SupervisorNotifier:
         except Exception as e:
             logger.error(f"Failed to send error notification: {e}")
 
+    async def send_filter_report(self, report_text: str, phrases_count: int):
+        """
+        Отправляет еженедельный отчёт фильтра с кнопками одобрения/отклонения рекомендаций.
+        """
+        if not self.enabled:
+            return
+
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            if phrases_count > 0:
+                footer = f"\n\n💡 <b>Найдено {phrases_count} фраз для стоп-листа.</b>\nПрименить их к фильтру?"
+                reply_markup = {
+                    "inline_keyboard": [[
+                        {"text": f"✅ Применить ({phrases_count} фраз)", "callback_data": "filter_apply_confirm"},
+                        {"text": "❌ Отклонить", "callback_data": "filter_apply_reject"}
+                    ]]
+                }
+            else:
+                footer = "\n\n✅ Конкретных фраз для добавления не найдено."
+                reply_markup = None
+
+            data = {
+                "chat_id": self.chat_id,
+                "text": report_text[:4000] + footer,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }
+            if reply_markup:
+                data["reply_markup"] = reply_markup
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=data)
+                response.raise_for_status()
+        except Exception as e:
+            logger.error(f"Failed to send filter report: {e}")
+
     def _escape_html(self, text: str) -> str:
         if not text:
             return ""

@@ -2,11 +2,14 @@
 Gwen bot commands для ревью и разметки лидов из Active Learning.
 """
 
+import json
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from systems.parser.active_learner import active_learner
 from systems.parser.vacancy_db import VacancyDatabase
+from systems.parser.lead_filter_advanced import add_custom_phrases
+from core.config.settings import settings
 from core.utils.structured_logger import get_logger
 
 router = Router()
@@ -204,7 +207,7 @@ async def complete_review_session(message: Message):
 async def cmd_review_stats(message: Message):
     """Статистика по Active Learning"""
     metrics = await active_learner.calculate_learning_curve_metrics()
-    
+
     text = (
         f"📊 Active Learning Статистика\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -212,5 +215,55 @@ async def cmd_review_stats(message: Message):
         f"📅 За эту неделю: {metrics['weekly_labeled']}\n"
         f"📈 Avg informativeness: {metrics['informativeness_avg']:.3f}\n"
     )
-    
+
     await message.answer(text)
+
+
+# ── Еженедельный анализ фильтра: кнопки одобрения/отклонения ─────────────────
+
+@router.callback_query(F.data == "filter_apply_confirm")
+async def handle_filter_apply_confirm(callback: CallbackQuery):
+    """Применить рекомендованные фразы к стоп-листу фильтра."""
+    pending_file = settings.DB_DIR / "pending_filter_phrases.json"
+
+    if not pending_file.exists():
+        await callback.answer("⚠️ Файл с рекомендациями не найден", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    try:
+        phrases = json.loads(pending_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка чтения файла: {e}", show_alert=True)
+        return
+
+    if not phrases:
+        await callback.answer("Список фраз пуст", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    added = add_custom_phrases(phrases)
+    pending_file.unlink(missing_ok=True)
+
+    await callback.answer(f"✅ Добавлено {added} фраз в стоп-лист", show_alert=True)
+    await callback.message.edit_text(
+        callback.message.text + f"\n\n✅ <b>Применено:</b> {added} фраз добавлено в стоп-лист фильтра.",
+        parse_mode="HTML",
+        reply_markup=None
+    )
+    logger.info(f"Filter apply confirmed: {added} phrases added by {callback.from_user.username}")
+
+
+@router.callback_query(F.data == "filter_apply_reject")
+async def handle_filter_apply_reject(callback: CallbackQuery):
+    """Отклонить рекомендованные фразы."""
+    pending_file = settings.DB_DIR / "pending_filter_phrases.json"
+    pending_file.unlink(missing_ok=True)
+
+    await callback.answer("Рекомендации отклонены", show_alert=False)
+    await callback.message.edit_text(
+        callback.message.text + "\n\n❌ <b>Отклонено.</b> Фразы не добавлены.",
+        parse_mode="HTML",
+        reply_markup=None
+    )
+    logger.info(f"Filter apply rejected by {callback.from_user.username}")

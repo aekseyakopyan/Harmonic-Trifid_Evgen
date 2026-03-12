@@ -4,8 +4,39 @@ import json
 import asyncio
 import ast
 import unicodedata
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse
+
+# ── Динамические фразы стоп-листа (добавляются через Гвен без перезапуска) ──
+_CUSTOM_PHRASES_FILE = Path(__file__).parents[2] / "data" / "db" / "custom_filter_phrases.json"
+
+def _load_custom_phrases() -> List[str]:
+    try:
+        if _CUSTOM_PHRASES_FILE.exists():
+            return json.loads(_CUSTOM_PHRASES_FILE.read_text(encoding="utf-8"))
+        return []
+    except Exception:
+        return []
+
+_custom_irrelevant: List[str] = _load_custom_phrases()
+
+
+def add_custom_phrases(phrases: List[str]) -> int:
+    """Добавить фразы в динамический стоп-лист. Возвращает кол-во новых."""
+    global _custom_irrelevant
+    added = 0
+    for phrase in phrases:
+        p = phrase.lower().strip()
+        if p and p not in _custom_irrelevant:
+            _custom_irrelevant.append(p)
+            added += 1
+    if added:
+        _CUSTOM_PHRASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CUSTOM_PHRASES_FILE.write_text(
+            json.dumps(_custom_irrelevant, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return added
 
 # Таблица замен Unicode-омоглифов → ASCII/кириллица
 _UNICODE_HOMOGLYPHS = str.maketrans({
@@ -946,10 +977,13 @@ def check_hard_blocks(text: str, features: Dict[str, Any]) -> Tuple[bool, str]:
         if keyword in text_raw_lower or keyword in text_norm_lower:
             return (True, f"SCAM_KEYWORD: {keyword}")
     
-    # 5. Нерелевантные ниши
+    # 5. Нерелевантные ниши (статические + динамически добавленные Гвен)
     for niche in BLACKLIST_CONFIG["irrelevant_hard"]:
         if niche in text_raw_lower or niche in text_norm_lower:
             return (True, f"IRRELEVANT_NICHE: {niche}")
+    for phrase in _custom_irrelevant:
+        if phrase in text_raw_lower or phrase in text_norm_lower:
+            return (True, f"CUSTOM_PHRASE: {phrase}")
     
     # 6. Слишком много эмодзи (spam indicator)
     if features["emoji_density"] > 0.3:

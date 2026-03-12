@@ -1529,32 +1529,67 @@ class GwenCommander:
             return
 
         # Итоговая сводка если батчей несколько
-        summary = ""
+        combined_text = "\n\n".join(all_reports)
+        final_report = combined_text
         if len(batches) > 1:
-            combined = "\n\n".join(all_reports)
-            summary_prompt = f"""По итогам анализа {total} лидов за неделю (в {len(batches)} батчах) дай итоговую сводку:
+            summary_prompt = f"""По итогам анализа {total} лидов за неделю дай итоговую сводку:
 
-{combined[:6000]}
+{combined_text[:6000]}
 
 Ответь:
 ## Итог
 - Всего лидов: {total}
 - Ошибок фильтра: <число>
 - Основные паттерны ошибок: <список>
-- Топ-5 фраз для стоп-листа: <список>
+- Топ фраз для стоп-листа: <список>
 - Оценка качества фильтра: <X>/10
+
+## Рекомендации (фразы в стоп-список)
+- "<фраза>" — <объяснение>
 """
             try:
                 summary = await llm_client.generate_response(summary_prompt, system_prompt)
+                if summary:
+                    final_report = summary
             except Exception:
                 pass
 
-        # Отправляем в Saved Messages
-        header = f"🔍 <b>Еженедельный анализ фильтра лидов</b>\nПроверено: <b>{total}</b> лидов (последние 7 дней)\n\n"
+        # Извлекаем фразы из отчёта отдельным LLM-вызовом
+        phrases_prompt = f"""Из текста ниже извлеки ТОЛЬКО конкретные фразы, рекомендованные для добавления в стоп-список фильтра лидов.
 
-        if summary:
-            await self.main_client.send_message("me", header + summary[:3500], parse_mode="html")
-        else:
-            await self.main_client.send_message("me", header + all_reports[0][:3500], parse_mode="html")
+{final_report[:4000]}
 
-        logger.info(f"✅ Анализ качества фильтра завершён: {total} лидов в {len(batches)} батчах")
+Верни ТОЛЬКО JSON-массив строк (фраз на русском, нижний регистр), без пояснений:
+["фраза 1", "фраза 2", ...]
+
+Если нет конкретных фраз — верни пустой массив: []"""
+        pending_phrases = []
+        try:
+            raw_phrases = await llm_client.generate_response(phrases_prompt, "Ты извлекаешь данные из текста.")
+            if raw_phrases:
+                import re as _re
+                arr_match = _re.search(r'\[.*?\]', raw_phrases, _re.DOTALL)
+                if arr_match:
+                    pending_phrases = json.loads(arr_match.group(0))
+                    pending_phrases = [p.lower().strip() for p in pending_phrases if isinstance(p, str) and p.strip()]
+        except Exception as e:
+            logger.warning(f"Не удалось извлечь фразы из отчёта: {e}")
+
+        # Сохраняем pending-фразы в файл
+        pending_file = settings.DB_DIR / "pending_filter_phrases.json"
+        if pending_phrases:
+            pending_file.write_text(
+                json.dumps(pending_phrases, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+        # Отправляем отчёт с кнопками через Supervisor Bot
+        from systems.gwen.notifier import supervisor_notifier
+        header = (
+            f"🔍 <b>Еженедельный анализ фильтра лидов</b>\n"
+            f"Проверено: <b>{total}</b> лидов (последние 7 дней)\n\n"
+        )
+        await supervisor_notifier.send_filter_report(
+            report_text=header + final_report[:3000],
+            phrases_count=len(pending_phrases)
+        )
+        logger.info(f"✅ Анализ завершён: {total} лидов, {len(pending_phrases)} фраз для стоп-листа")
