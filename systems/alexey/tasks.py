@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 from sqlalchemy import select, and_, or_
 from core.database.connection import async_session
@@ -8,11 +8,17 @@ from core.database.models import Lead, MessageLog
 from core.ai_engine.llm_client import llm_client
 from core.ai_engine.prompt_builder import prompt_builder
 from core.utils.logger import logger
+from core.utils.smart_sender import smart_send_message
 from telethon import TelegramClient  # noqa: F401 — remove after full migration
 from pyrogram import Client
 from systems.gwen import create_interceptor
 from core.config.settings import settings
 from core.utils.humanity import humanity_manager
+
+MSK = timezone(timedelta(hours=3))
+
+def now_msk():
+    return datetime.now(MSK).replace(tzinfo=None)
 
 # Модули анализа вакансий
 from systems.parser.vacancy_analyzer import VacancyScorer, ContactExtractor, NicheDetector
@@ -174,8 +180,6 @@ async def run_automated_outreach(client: Client):
                             continue
 
                         # 5. ✨ Умная отправка (username → ID hash=0 → участники чатов → телефон)
-                        from core.utils.smart_sender import smart_send_message
-                        
                         # Определяем ключ получателя: int если числовой ID, иначе строка
                         clean_recipient_str = str(clean_recipient)
                         recipient_key = int(clean_recipient) if clean_recipient_str.isdigit() else clean_recipient
@@ -233,8 +237,8 @@ async def run_follow_ups(client: TelegramClient):
     
     while True:
         try:
-            # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (9:00 - 19:00)
-            cur_hour = datetime.now().hour
+            # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (9:00 - 19:00 МСК)
+            cur_hour = now_msk().hour
             if not (9 <= cur_hour < 19):
                 logger.info(f"⏸ Вне рабочего времени ({cur_hour}:00). Follow-ups на паузе до 9:00.")
                 await asyncio.sleep(1800) # Пауза 30 минут
