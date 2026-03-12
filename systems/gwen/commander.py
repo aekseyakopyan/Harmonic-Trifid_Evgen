@@ -10,6 +10,13 @@ import sqlite3
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from pyrogram import Client, errors
+
+MSK = timezone(timedelta(hours=3))  # Moscow time (UTC+3)
+
+
+def now_msk() -> datetime:
+    """Current datetime in Moscow timezone."""
+    return datetime.now(MSK)
 from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
 from core.database.models import MessageLog, Lead
@@ -18,6 +25,7 @@ from core.utils.logger import logger
 from core.utils.health import health_monitor
 from systems.gwen.gwen_supervisor import gwen_supervisor
 from systems.parser.duplicate_detector import get_duplicate_detector
+from core.utils.handover import handover_manager
 
 class GwenCommander:
     """
@@ -34,7 +42,48 @@ class GwenCommander:
         self.waiting_for_reason = {} # user_id -> v_hash
         self.is_running = False
         self._chat_name_to_id = {} # Cache for metadata resolution
+        self._blocked_ids: set = set()       # Кеш заблокированных user_id из TG
+        self._blocked_cache_ts: float = 0.0  # Время последнего обновления кеша
         
+    async def _refresh_blocked_cache(self) -> None:
+        """Обновляет кеш заблокированных пользователей из Telegram (раз в час)."""
+        import time
+        if time.time() - self._blocked_cache_ts < 3600:
+            return
+        try:
+            from pyrogram.raw import functions as raw_fn, types as raw_types
+            new_ids: set = set()
+            offset = 0
+            limit = 100
+            while True:
+                result = await self.main_client.invoke(
+                    raw_fn.contacts.GetBlocked(offset=offset, limit=limit)
+                )
+                users = getattr(result, 'users', [])
+                if not users:
+                    break
+                for u in users:
+                    new_ids.add(u.id)
+                if len(users) < limit:
+                    break
+                offset += len(users)
+            self._blocked_ids = new_ids
+            self._blocked_cache_ts = time.time()
+            logger.info(f"🔒 ЧС обновлён: {len(self._blocked_ids)} заблокированных пользователей")
+        except Exception as e:
+            logger.warning(f"Не удалось обновить ЧС из TG: {e}")
+
+    async def _is_tg_blocked(self, target: str) -> bool:
+        """Проверяет, заблокирован ли контакт в Telegram-аккаунте Алексея."""
+        await self._refresh_blocked_cache()
+        if not self._blocked_ids:
+            return False
+        try:
+            user = await self.main_client.get_users(target)
+            return user.id in self._blocked_ids
+        except Exception:
+            return False
+
     async def _resolve_chat_by_name(self, name: str) -> Optional[int]:
         """Пытается найти ID чата по его экранному имени среди диалогов."""
         if not name: return None
@@ -84,20 +133,24 @@ class GwenCommander:
     async def check_account_health(self) -> str:
         """
         Проверка статуса аккаунта через @SpamBot.
+        Отправляет /start дважды с паузой 5 сек — именно так SpamBot отвечает.
         """
         logger.info("🔍 Запускаю диагностику аккаунта через @SpamBot...")
         try:
-            # Отправляем /start
-            await self.main_client.send_message("@SpamBot", "/start")
-            await asyncio.sleep(2)
-            
-            # Получаем последнее сообщение
+            await self.main_client.send_message("SpamBot", "/start")
+            await asyncio.sleep(5)
+            await self.main_client.send_message("SpamBot", "/start")
+            await asyncio.sleep(5)
+
             messages = []
-            async for message in self.main_client.get_chat_history("@SpamBot", limit=1):
+            async for message in self.main_client.get_chat_history("SpamBot", limit=3):
                 messages.append(message)
-            
-            if messages:
-                return messages[0].text
+
+            # Берём последнее входящее сообщение от бота
+            for msg in messages:
+                if not msg.outgoing and msg.text:
+                    return msg.text
+
             return "Нет ответа от @SpamBot"
         except Exception as e:
             logger.error(f"Failed to check SpamBot: {e}")
@@ -200,13 +253,9 @@ class GwenCommander:
                         conn.commit()
                         conn.close()
                         try:
-                            preview = (v_dict.get('text') or '')[:80]
-                            await self.main_client.send_message("me",
-                                f"⚠️ <b>Пропуск — нет контакта</b>\n"
-                                f"🆔 {v_hash[:8]} | 📁 {v_dict.get('source', '—')}\n"
-                                f"<i>{preview}</i>",
-                                parse_mode="html"
-                            )
+                            _dir = v_dict.get('direction') or '—'
+                            _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
+                            await supervisor_notifier.send_error(f"⚠️ нет контакта | {_dir} | {_req}")
                         except Exception:
                             pass
                         continue
@@ -243,7 +292,7 @@ class GwenCommander:
                             continue
 
                     # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00)
-                    cur_hour = datetime.now().hour
+                    cur_hour = now_msk().hour
                     if settings.AUTO_OUTREACH and not (8 <= cur_hour < 23):
                         logger.info(f"⏸ Вне рабочего времени ({cur_hour}:00). Авто-отклик отложен до 8:00.")
                         continue
@@ -251,7 +300,16 @@ class GwenCommander:
                     if settings.AUTO_OUTREACH:
                         try:
                             target = v_contact.split('/')[-1].replace('@', '').strip()
-                            
+
+                            # ПРОВЕРКА ЧС (заблокированные в TG)
+                            if await self._is_tg_blocked(target):
+                                logger.info(f"🚫 ЧС: {v_contact} — пропускаем")
+                                conn = sqlite3.connect(self.db_path, timeout=30)
+                                conn.execute("UPDATE vacancies SET response = 'blacklist_skip' WHERE hash = ?", (v_hash,))
+                                conn.commit()
+                                conn.close()
+                                continue
+
                             # ПРОВЕРКА НА ДУБЛИКАТЫ В ЧАТЕ (Схожесть с прошлыми откликами)
                             is_duplicate = False
                             try:
@@ -298,7 +356,9 @@ class GwenCommander:
 
                             logger.info(f"🚀 Гвен автоматически отправляет отклик в {v_contact}")
                             sent_msg = await self.main_client.send_message(target, v_draft)
-                            
+                            if sent_msg:
+                                handover_manager.mark_as_automated(sent_msg.id)
+
                             # Успешная отправка
                             conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
                             cursor = conn.cursor()
@@ -359,13 +419,10 @@ class GwenCommander:
 
                             logger.info(f"✅ Авто-отклик отправлен: {v_contact}")
                             try:
-                                snippet = v_draft[:200] + ("…" if len(v_draft) > 200 else "")
-                                await self.main_client.send_message("me",
-                                    f"✅ <b>Отклик отправлен</b>\n"
-                                    f"👤 {v_contact} | 🏷 {v_tier}\n\n"
-                                    f"<i>{snippet}</i>",
-                                    parse_mode="html"
-                                )
+                                _login = v_contact.split('/')[-1].replace('@', '').strip()
+                                _dir = v_dict.get('direction') or '—'
+                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
+                                await supervisor_notifier.send_error(f"✅ @{_login} | {_dir} | {_req}")
                             except Exception:
                                 pass
 
@@ -415,14 +472,11 @@ class GwenCommander:
                                 conn.close()
                             except Exception as db_err:
                                 logger.error(f"Failed to mark lead as failed: {db_err}")
-                            await supervisor_notifier.send_error(f"❌ Авто-отклик не отправлен → {v_contact}\n{str(e)}")
                             try:
-                                await self.main_client.send_message("me",
-                                    f"❌ <b>Ошибка отправки</b>\n"
-                                    f"👤 {v_contact}\n"
-                                    f"<code>{str(e)[:150]}</code>",
-                                    parse_mode="html"
-                                )
+                                _login = v_contact.split('/')[-1].replace('@', '').strip()
+                                _dir = v_dict.get('direction') or '—'
+                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
+                                await supervisor_notifier.send_error(f"❌ @{_login} | {_dir} | {_req} | {str(e)[:80]}")
                             except Exception:
                                 pass
                     else:
@@ -454,7 +508,7 @@ class GwenCommander:
         while True:
             try:
                 # Проверка времени (Запуск в 2 часа ночи по МСК)
-                now = datetime.now()
+                now = now_msk()
                 if now.hour == 2 and now.minute < 30:
                     report = await gwen_learning_engine.run_learning_session()
                     
@@ -736,7 +790,7 @@ class GwenCommander:
             backlog_path = settings.BASE_DIR / "backlog.md"
             
             # Формируем строку задачи
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            timestamp = now_msk().strftime("%Y-%m-%d %H:%M")
             new_line = f"- [ ] {task_text} 🗣️ (Voice/Gwen {timestamp})\n"
             
             # Создаем или дописываем
@@ -771,7 +825,7 @@ class GwenCommander:
             # 1. Статистика по активным диалогам (SQLAlchemy)
             async with async_session() as session:
                 leads_count = await session.scalar(select(func.count(Lead.id)))
-                today = datetime.now() - timedelta(days=1)
+                today = now_msk() - timedelta(days=1)
                 msg_today = await session.scalar(select(func.count(MessageLog.id)).where(MessageLog.created_at > today))
             
             # 2. Статистика по парсеру (SQLite)
@@ -815,7 +869,7 @@ class GwenCommander:
             
             await event.respond(f"🚀 <b>Гвен начинает рассылку...</b>\nЦель: клиенты активные за последние {hours}ч.\nСообщение: <i>{message}</i>", parse_mode='html')
             
-            since = datetime.now() - timedelta(hours=hours)
+            since = now_msk() - timedelta(hours=hours)
             
             async with async_session() as session:
                 # Находим лидов, с которыми общались (только входящие от них)
@@ -834,7 +888,9 @@ class GwenCommander:
             for tg_id in leads_ids:
                 try:
                     # Используем основной клиент для отправки
-                    await self.main_client.send_message(tg_id, message)
+                    sent_msg = await self.main_client.send_message(tg_id, message)
+                    if sent_msg:
+                        handover_manager.mark_as_automated(sent_msg.id)
                     success_count += 1
                     await asyncio.sleep(1.5) # Защита от спам-фильтра
                 except Exception as e:
@@ -1058,7 +1114,9 @@ class GwenCommander:
                     destination = v_contact.split('/')[-1].replace('@', '').strip()
                 
                 try:
-                    await self.main_client.send_message(destination, v_draft)
+                    sent_msg = await self.main_client.send_message(destination, v_draft)
+                    if sent_msg:
+                        handover_manager.mark_as_automated(sent_msg.id)
                 except ValueError as ve:
                     error_msg = str(ve)
                     if "Cannot find any entity" in error_msg or "Could not find the input entity" in error_msg or "No user has" in error_msg:
@@ -1151,7 +1209,7 @@ class GwenCommander:
                 incoming_msgs = "—"
 
             # --- Форматирование ---
-            today = datetime.now().strftime("%d.%m.%Y")
+            today = now_msk().strftime("%d.%m.%Y")
             orders_block = ""
             if top_orders:
                 lines = []
@@ -1181,7 +1239,7 @@ class GwenCommander:
         """Отправляет утренний отчёт в 9:00 каждый день в Saved Messages."""
         while True:
             try:
-                now = datetime.now()
+                now = now_msk()
                 target = now.replace(hour=9, minute=0, second=0, microsecond=0)
                 if now >= target:
                     target += timedelta(days=1)
@@ -1205,7 +1263,7 @@ class GwenCommander:
 
         while True:
             try:
-                now = datetime.now()
+                now = now_msk()
                 if not (WORK_HOURS[0] <= now.hour < WORK_HOURS[1]):
                     await asyncio.sleep(1800)
                     continue
@@ -1254,25 +1312,51 @@ class GwenCommander:
                         continue
 
                     target = contact_link.split('/')[-1].replace('@', '').strip()
+
+                    # Пропускаем невалидные контакты (не TG username/id)
+                    import re as _re
+                    _is_tg = (
+                        contact_link.startswith('https://t.me/') or
+                        contact_link.startswith('@') or
+                        contact_link.lstrip('-').isdigit()
+                    ) and _re.match(r'^[a-zA-Z][a-zA-Z0-9_]{3,31}$', target)
+                    if not _is_tg:
+                        logger.info(f"⏭ Пропуск невалидного контакта: {contact_link}")
+                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
+                        conn.execute("UPDATE history_leads SET outreach_sent_at = 'invalid_contact' WHERE id = ?", (lead_id,))
+                        conn.commit()
+                        conn.close()
+                        continue
+
+                    # ПРОВЕРКА ЧС
+                    if await self._is_tg_blocked(target):
+                        logger.info(f"🚫 ЧС (history): {contact_link} — пропускаем")
+                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
+                        conn.execute(
+                            "UPDATE history_leads SET outreach_sent_at = 'blacklist_skip' WHERE id = ?",
+                            (lead_id,)
+                        )
+                        conn.commit()
+                        conn.close()
+                        continue
+
                     try:
-                        await self.main_client.send_message(target, draft)
+                        sent_msg = await self.main_client.send_message(target, draft)
+                        if sent_msg:
+                            handover_manager.mark_as_automated(sent_msg.id)
                         conn = sqlite3.connect(HISTORY_DB, timeout=30)
                         conn.execute(
                             "UPDATE history_leads SET outreach_sent_at = ? WHERE id = ?",
-                            (datetime.now().isoformat(), lead_id)
+                            (now_msk().isoformat(), lead_id)
                         )
                         conn.commit()
                         conn.close()
                         logger.info(f"✅ History outreach → {contact_link}")
                         try:
-                            snippet = draft[:150] + ("…" if len(draft) > 150 else "")
-                            await self.main_client.send_message("me",
-                                f"📬 <b>Ретроспективный отклик</b>\n"
-                                f"👤 {contact_link}\n"
-                                f"📁 {source or '—'} | {lead_date or '—'}\n\n"
-                                f"<i>{snippet}</i>",
-                                parse_mode="html"
-                            )
+                            _login = contact_link.split('/')[-1].replace('@', '').strip()
+                            _dir = direction or '—'
+                            _req = (text or '').replace('\n', ' ')[:120]
+                            await supervisor_notifier.send_error(f"📬 @{_login} | {_dir} | {_req}")
                         except Exception:
                             pass
                     except Exception as e:
