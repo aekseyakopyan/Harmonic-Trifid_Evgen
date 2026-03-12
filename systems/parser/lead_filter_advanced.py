@@ -3,8 +3,36 @@ import re
 import json
 import asyncio
 import ast
+import unicodedata
 from typing import Dict, List, Tuple, Optional, Any
 from urllib.parse import urlparse
+
+# Таблица замен Unicode-омоглифов → ASCII/кириллица
+_UNICODE_HOMOGLYPHS = str.maketrans({
+    'ⲁ': 'а', 'ꭺ': 'а', 'ɑ': 'а',
+    'ⲃ': 'в', 'ᵥ': 'в',
+    'ⲥ': 'с', 'ϲ': 'с', 'ѕ': 'с',
+    'ⲉ': 'е', 'ё': 'е',
+    'ⲕ': 'к', 'κ': 'к',
+    'ⲙ': 'м',
+    'ⲛ': 'н',
+    'ⲟ': 'о', 'о': 'о',  # Latin o → Cyrillic о
+    'ⲣ': 'р', 'ρ': 'р',
+    'ⲧ': 'т',
+    'ⲩ': 'у',
+    'ⲭ': 'х', 'χ': 'х',
+    'ⲱ': 'ш',
+    'ʜ': 'н',
+    'ᴀ': 'а', 'ᴄ': 'с', 'ᴇ': 'е', 'ᴋ': 'к',
+    'ᴍ': 'м', 'ɴ': 'н', 'ᴏ': 'о', 'ᴘ': 'р',
+    'ᴛ': 'т', 'ᴜ': 'у', 'ᴠ': 'в',
+})
+
+def _normalize_text(text: str) -> str:
+    """Нормализует Unicode-омоглифы и диакритику для надёжного матчинга."""
+    text = unicodedata.normalize('NFC', text)
+    text = text.translate(_UNICODE_HOMOGLYPHS)
+    return text
 
 from core.ai_engine.resilient_llm import resilient_llm_client
 from systems.parser.duplicate_detector import DuplicateDetector
@@ -55,6 +83,12 @@ BLACKLIST_CONFIG = {
         "@getclient_tg_bot",
         "vk.com/freelance_all",
     ],
+
+    # Суффиксы bot-аккаунтов в username
+    "bot_username_patterns": [
+        r"(?i)(vacanci|vacancy|jobs?|work|job_bot|freelanc)[_\w]*bot$",
+        r"(?i)bot_(vacanci|jobs?|work|freelanc)",
+    ],
     
     # Явные мошеннические паттерны
     "scam_patterns": [
@@ -69,6 +103,16 @@ BLACKLIST_CONFIG = {
         r"(?:заказ|покупк).*за наш счёт.*(?:\d+[\s]*(?:₽|руб|рублей))",
         r"тайный покупатель",
         r"mystery.?shopper",
+        # Исполнитель предлагает услуги (не заказчик)
+        r"#помогу\b",
+        r"\bзанимаюсь\s+настройкой\b",
+        r"\bя\s+занимаюсь\s+(?:настройкой|продвижением|ведением|запуском|таргетом|рекламой|seo|seo-)",
+        r"\bбыстро\s+привед[ую]\s+(?:клиентов|заявки|лидов|трафик)",
+        r"\bпредоставляем\s+(?:широкий|услуги|спектр|комплекс)",
+        r"\bтебе\s+к\s+нам\b",
+        r"\bможем?\s+сломать\s+сайт\b",
+        r"\bзанимаюсь\s+хакинг",
+        r"\bвзломаю\s+сайт\b",
     ],
     
     # Ключевые слова мошенничества
@@ -93,17 +137,32 @@ BLACKLIST_CONFIG = {
         "закупщик рекламы", "байер",
         "фотофиксация", "фотографирование помещений",
         "иллюстратор", "художник",
-        "переводчик", "копирайтер со знанием",
+        "переводчик", "копирайтер со знанием", "копирайтер",
         "отзывы за деньги", "отзывы авито", "отзывы wb",
         "заработок без вложений", "доход в день",
         "подработка подростку", "работа для студентов без опыта",
         # SMM-контент (не наша услуга)
-        "smm специалист", "ведение соцсети", "ведение инстаграм", "ведение вк",
+        "smm специалист", "smm-менеджер", "smm менеджер", "smm-специалист",
+        "ведение соцсети", "ведение инстаграм", "ведение вк",
         "контент менеджер", "контент для соцсетей", "контент-план",
         "ютуб канал", "youtube продвижение", "tiktok продвижение", "рилс", "инфлюенсер",
         # Площадки, с которыми не работаем
         "facebook ads", "реклама facebook", "реклама инстаграм",
+        "telegram ads", "telegram рекла", "тг адс", "tg ads",
         "telegram реклама", "реклама telegram", "tg реклама",
+        "telegram-бот", "телеграм бот продвижение",
+        # Маркетплейсы и найм менеджеров
+        "яндекс маркет", "yandex market", "wb менеджер", "ozon менеджер",
+        "менеджер маркетплейс", "менеджер по продвижению маркетплейс",
+        "менеджер по развитию", "менеджер по продвижению на яндекс",
+        # Несвязанные специалисты
+        "сторисмейкер", "сторис мейкер", "stories maker", "reels мейкер",
+        "торговый представитель", "менеджер по продажам офлайн",
+        "монтажёр", "видеограф", "оператор съёмки",
+        # Музыка, биты, рэп
+        "минуса для", "биты для", "рэпчик", "хип-хап", "хип-хоп бит",
+        # Взлом и нелегальные услуги
+        "хакингом", "взломаю сайт", "сломать сайт конкурента", "можем сломать",
     ],
 }
 
@@ -171,15 +230,29 @@ SCORING_CONFIG = {
         "keywords": [
             "подпишитесь на канал", "переходи в бот", "больше проектов в боте",
             "узнать больше", "жми на кнопку", "регистрируйся",
-            "обучающий курс", "бесплатный вебинар"
+            "обучающий курс", "бесплатный вебинар",
+            # Найм в команду (агентства и компании ищут сотрудников)
+            "наша дружная команда", "наша команда ищет", "ищем людей в команду",
+            "ищем человека в команду", "открыта вакансия", "актуальная вакансия",
+            "ищем на постоянную", "ищем в команду", "в нашу команду",
+            "на постоянную основу", "на постоянку",
+            "команда ищет", "команда по маркетингу ищем",
+            # Продажа инфопродуктов / консультаций
+            "пак инфы", "пак материалов", "приватные консультации",
+            "курс по", "обучение по арбитражу", "обучение по трафику",
+            "гарантируем доход", "гарантированный заработок",
+            # Ставки лайков / скачивания
+            "ставишь лайки", "скачиваешь приложения", "серфишь сайты",
         ],
         "weight": -5
     },
-    
+
     "spam_medium": {  # -3 балла
         "keywords": [
             "набор сотрудников", "требуются", "вакансия", "ищем в команду",
-            "удаленная работа на постоянной основе"
+            "удаленная работа на постоянной основе",
+            "свежий пак", "авторский курс", "закрытый канал",
+            "лью трафик сам", "сам лью", "льём трафик",
         ],
         "weight": -3
     },
@@ -778,8 +851,9 @@ def normalize_and_extract_features(text: str) -> Dict[str, Any]:
     """
     Нормализует текст и извлекает структурные признаки.
     """
+    text = _normalize_text(text)  # нормализуем омоглифы до всех проверок
     text_lower = text.lower()
-    
+
     # 1. Извлекаем URL
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
     domains = [urlparse(url).netloc for url in urls]
@@ -878,13 +952,41 @@ def check_hard_blocks(text: str, features: Dict[str, Any]) -> Tuple[bool, str]:
             return (True, f"IRRELEVANT_NICHE: {niche}")
     
     # 6. Слишком много эмодзи (spam indicator)
-    if features["emoji_density"] > 0.3:  # больше 30% текста — эмодзи
+    if features["emoji_density"] > 0.3:
         return (True, f"EMOJI_SPAM: density={features['emoji_density']:.2f}")
-    
+
     # 7. Слишком короткий текст (меньше 5 слов)
     if features["word_count"] < 5:
         return (True, f"TOO_SHORT: {features['word_count']} words")
-    
+
+    # 8. Бот-агрегаторы: много хэштегов (4+ = агрегатор вакансий, не живой заказ)
+    if len(features.get("hashtags", [])) >= 4:
+        return (True, f"HASHTAG_AGGREGATOR: {len(features['hashtags'])} hashtags")
+
+    # 9. Bot-username в mentions (FreelancerVacancii_Bot и подобные)
+    for mention in features.get("mentions", []):
+        for pattern in BLACKLIST_CONFIG.get("bot_username_patterns", []):
+            if re.search(pattern, mention):
+                return (True, f"BOT_ACCOUNT: {mention}")
+
+    # 10. Unicode-омоглифы в тексте — признак обхода фильтров (спам)
+    normalized = _normalize_text(text_raw_lower)
+    if normalized != text_raw_lower:
+        # Проверяем scam-паттерны на нормализованном тексте
+        for pattern in BLACKLIST_CONFIG["scam_patterns"]:
+            if re.search(pattern, normalized):
+                return (True, f"UNICODE_SCAM_PATTERN: {pattern}")
+        for keyword in BLACKLIST_CONFIG["scam_keywords"]:
+            if keyword in normalized:
+                return (True, f"UNICODE_SCAM_KEYWORD: {keyword}")
+        for niche in BLACKLIST_CONFIG["irrelevant_hard"]:
+            if niche in normalized:
+                return (True, f"UNICODE_IRRELEVANT: {niche}")
+        # Если в нормализованном тексте >= 3 спам-ключей из spam_strong — блок
+        spam_hits = sum(1 for kw in SCORING_CONFIG["spam_strong"]["keywords"] if kw in normalized)
+        if spam_hits >= 2:
+            return (True, f"UNICODE_SPAM: {spam_hits} spam keywords after normalization")
+
     return (False, "")
 
 # ==========================================
@@ -1012,6 +1114,9 @@ def apply_context_validation(score: int, source: str, direction: str, features: 
     elif direction in DIRECTION_RELEVANCE["irrelevant"]:
         context_score -= 2
         context_hits.append(f"-2: IRRELEVANT_NICHE ({direction})")
+    elif direction in ("Unknown", "Keyword Match", None, ""):
+        context_score -= 3
+        context_hits.append(f"-3: NO_DIRECTION ({direction})")
     
     return {
         "is_blocked": False,
