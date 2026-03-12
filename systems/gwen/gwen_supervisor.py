@@ -145,33 +145,41 @@ class GwenSupervisor:
 Ответь строго JSON:
 {{"verdict": "ALLOW" | "BLOCK" | "RETRY", "reason": "одна фраза", "correction": "что исправить (только для RETRY)"}}"""
 
-        try:
-            payload = {
-                "model": settings.SUPERVISOR_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 200,
-                "temperature": 0.1
-            }
-            headers = {
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://telegram-bot.local",
-                "X-Title": "Gwen Supervisor"
-            }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    json=payload,
-                    headers=headers
-                )
-                response.raise_for_status()
-                raw = response.json()["choices"][0]["message"]["content"].strip()
+        headers = {
+            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://telegram-bot.local",
+            "X-Title": "Gwen Supervisor"
+        }
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
 
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if json_match:
+        # Пробуем бесплатную модель, при неудаче — основную платную
+        models_to_try = [settings.SUPERVISOR_MODEL, settings.OPENROUTER_MODEL]
+
+        for model in models_to_try:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 200,
+                    "temperature": 0.1
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        json=payload,
+                        headers=headers
+                    )
+                    response.raise_for_status()
+                    raw = response.json()["choices"][0]["message"]["content"].strip()
+
+                json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if not json_match:
+                    return {"verdict": "ALLOW", "reason": "Gwen response unparseable"}
+
                 result = json.loads(json_match.group(0))
                 verdict = result.get("verdict", "ALLOW").upper()
                 if verdict == "RETRY":
@@ -184,12 +192,10 @@ class GwenSupervisor:
                     return {"verdict": "BLOCK", "reason": result.get("reason", "Blocked by Gwen AI")}
                 return {"verdict": "ALLOW", "reason": "Approved by Gwen"}
 
-            # Не смогли разобрать JSON — пропускаем
-            return {"verdict": "ALLOW", "reason": "Gwen response unparseable"}
+            except Exception as e:
+                logger.warning(f"Gwen: model {model} failed: {e}, trying next...")
 
-        except Exception as e:
-            logger.warning(f"Gwen AI check skipped: {e}")
-            return {"verdict": "ALLOW", "reason": f"Check skipped: {e}"}
+        return {"verdict": "ALLOW", "reason": "All models failed, skipping check"}
             
     async def generate_chat_response(self, user_message: str, history: list = None) -> str:
         """
