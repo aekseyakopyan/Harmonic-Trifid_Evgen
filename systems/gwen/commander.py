@@ -437,19 +437,26 @@ class GwenCommander:
                             # PEER_FLOOD = временный rate limit на новые контакты
                             logger.warning(f"⏳ PEER_FLOOD для {v_contact}: {e}")
                             # НЕ помечаем как failed — оставляем для повторной попытки
-                            # Отправляем /start в SpamBot дважды — стандартный способ снять ограничение
-                            try:
-                                await self.main_client.send_message("SpamBot", "/start")
-                                await asyncio.sleep(3)
-                                await self.main_client.send_message("SpamBot", "/start")
-                                logger.info("✅ Отправил /start в SpamBot дважды")
-                            except Exception as sb_err:
-                                logger.warning(f"Не удалось написать SpamBot: {sb_err}")
-                            await supervisor_notifier.send_error(
-                                f"⏳ <b>PEER_FLOOD</b> — временный rate limit на новые контакты.\n"
-                                f"Написал /start в SpamBot 2 раза. Пауза 30 мин, после — продолжаем."
-                            )
-                            await asyncio.sleep(1800)  # Пауза 30 минут
+                            # Пишем /start дважды в SpamBot и читаем ответ
+                            spambot_reply = await self.check_account_health()
+                            is_free = any(phrase in spambot_reply.lower() for phrase in [
+                                "no limits", "free as a bird", "свободен", "ограничений нет"
+                            ])
+                            if is_free:
+                                # SpamBot подтвердил — лимитов нет, продолжаем без паузы
+                                logger.info("✅ SpamBot: лимитов нет — продолжаем без паузы")
+                                await supervisor_notifier.send_error(
+                                    f"⚡️ <b>PEER_FLOOD</b> снят — SpamBot подтвердил отсутствие лимитов. Продолжаем."
+                                )
+                            else:
+                                # Реальное ограничение — ждём 30 минут
+                                logger.warning(f"⏳ SpamBot: есть ограничения — пауза 30 мин. Ответ: {spambot_reply[:100]}")
+                                await supervisor_notifier.send_error(
+                                    f"⏳ <b>PEER_FLOOD</b> — SpamBot говорит об ограничениях.\n"
+                                    f"<i>{spambot_reply[:200]}</i>\n"
+                                    f"Пауза 30 мин, после — продолжаем."
+                                )
+                                await asyncio.sleep(1800)
                             continue
 
                         except (errors.UserPrivacyRestricted, errors.PeerIdInvalid, errors.ChatWriteForbidden) as e:
