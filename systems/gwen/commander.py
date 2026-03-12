@@ -1443,8 +1443,7 @@ class GwenCommander:
                 await asyncio.sleep(3600)
 
     async def _analyze_lead_quality(self):
-        """Передаёт Гвен принятые лиды за последние 7 дней для оценки корректности фильтрации."""
-        from systems.gwen.notifier import supervisor_notifier
+        """Передаёт Гвен ВСЕ принятые лиды за последние 7 дней для оценки корректности фильтрации."""
         from core.ai_engine.llm_client import llm_client
 
         try:
@@ -1456,7 +1455,6 @@ class GwenCommander:
                 WHERE status = 'accepted'
                   AND DATE(last_seen) >= DATE('now', '-7 days')
                 ORDER BY last_seen DESC
-                LIMIT 80
             """)
             rows = cursor.fetchall()
             conn.close()
@@ -1468,12 +1466,8 @@ class GwenCommander:
             logger.info("📭 Нет принятых лидов за неделю — анализ пропущен")
             return
 
-        logger.info(f"🔍 Гвен анализирует {len(rows)} принятых лидов за неделю...")
-
-        leads_block = "\n\n".join([
-            f"[{h[:8]}] Направление: {direction or '?'}\n{(text or '').strip()[:300]}"
-            for h, text, direction, source in rows
-        ])
+        total = len(rows)
+        logger.info(f"🔍 Гвен анализирует {total} принятых лидов за неделю...")
 
         system_prompt = (
             "Ты — Гвен, аналитик фильтра лидов для цифрового агентства Evium "
@@ -1481,16 +1475,29 @@ class GwenCommander:
             "Твоя задача: выявить ошибки фильтрации — лиды, которые фильтр принял, но не должен был."
         )
 
-        prompt = f"""Ниже список вакансий/запросов, которые наш фильтр принял как целевые лиды за последние 7 дней.
-
-ЦЕЛЕВОЙ ЛИД — это человек или компания, которая ИЩЕТ подрядчика для: SEO-продвижения, настройки Яндекс Директ, рекламы на Авито, таргета ВКонтакте, разработки сайта, SMM.
+        criteria = """ЦЕЛЕВОЙ ЛИД — человек или компания, которая ИЩЕТ подрядчика для: SEO, Яндекс Директ, реклама на Авито, таргет ВКонтакте, разработка сайта, SMM.
 
 НЕ ЦЕЛЕВЫЕ (ошибки фильтра):
 - Предложения своих услуг ("я занимаюсь...", "поможем вам...", "#помогу")
-- Продажа чего-либо, не связанного с нашими услугами
-- Спам, боты, автоответы
-- Офтоп (вакансии не из нашей сферы)
-- Запросы на услуги, которых у нас нет (дизайн, 1С, видео и т.д., если нет сайтов в направлении)
+- Продажа чего угодно, не связанного с нашими услугами
+- Спам, боты, автоответы агрегаторов
+- Офтоп (запросы не из нашей сферы)
+- Запросы на услуги которых у нас нет (дизайн, 1С, видео, копирайтинг и т.д.)"""
+
+        # Разбиваем на батчи по 100 лидов — чтобы не переполнить контекст
+        BATCH_SIZE = 100
+        batches = [rows[i:i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
+        all_reports = []
+
+        for batch_num, batch in enumerate(batches, 1):
+            leads_block = "\n\n".join([
+                f"[{h[:8]}] {direction or '?'}: {(text or '').strip()[:250]}"
+                for h, text, direction, source in batch
+            ])
+
+            prompt = f"""Ниже список вакансий (батч {batch_num}/{len(batches)}), которые фильтр принял как целевые лиды за последние 7 дней.
+
+{criteria}
 
 ---
 {leads_block}
@@ -1499,31 +1506,55 @@ class GwenCommander:
 Ответь строго в формате:
 
 ## Ошибки фильтрации
-- [<ID>] <причина почему это не целевой лид>
-(если ошибок нет — напиши "Ошибок не обнаружено")
+- [<ID>] <причина>
+(если ошибок нет — "Ошибок не обнаружено")
 
 ## Паттерны проблем
 - <что объединяет ложные срабатывания>
 
-## Рекомендации
-- Добавить в стоп-список: "<фраза>" — <объяснение>
-
-## Оценка качества фильтра за неделю: <X>/10
+## Рекомендации (фразы в стоп-список)
+- "<фраза>" — <объяснение>
 """
+            try:
+                report = await llm_client.generate_response(prompt, system_prompt)
+                if report:
+                    all_reports.append(f"<b>Батч {batch_num}/{len(batches)} ({len(batch)} лидов)</b>\n{report}")
+                else:
+                    logger.warning(f"_analyze_lead_quality: пустой ответ для батча {batch_num}")
+            except Exception as e:
+                logger.error(f"_analyze_lead_quality: ошибка батча {batch_num}: {e}")
 
-        try:
-            report = await llm_client.generate_response(prompt, system_prompt)
-            if not report:
-                logger.error("_analyze_lead_quality: LLM вернул пустой ответ")
-                return
+        if not all_reports:
+            logger.error("_analyze_lead_quality: все батчи вернули пустые ответы")
+            return
 
-            total = len(rows)
-            header = (
-                f"🔍 <b>Еженедельный анализ фильтра лидов</b>\n"
-                f"Проверено лидов: <b>{total}</b> (последние 7 дней)\n\n"
-            )
-            await self.main_client.send_message("me", header + report[:3500], parse_mode="html")
-            logger.info("✅ Еженедельный анализ качества фильтра отправлен")
+        # Итоговая сводка если батчей несколько
+        summary = ""
+        if len(batches) > 1:
+            combined = "\n\n".join(all_reports)
+            summary_prompt = f"""По итогам анализа {total} лидов за неделю (в {len(batches)} батчах) дай итоговую сводку:
 
-        except Exception as e:
-            logger.error(f"_analyze_lead_quality: LLM error: {e}")
+{combined[:6000]}
+
+Ответь:
+## Итог
+- Всего лидов: {total}
+- Ошибок фильтра: <число>
+- Основные паттерны ошибок: <список>
+- Топ-5 фраз для стоп-листа: <список>
+- Оценка качества фильтра: <X>/10
+"""
+            try:
+                summary = await llm_client.generate_response(summary_prompt, system_prompt)
+            except Exception:
+                pass
+
+        # Отправляем в Saved Messages
+        header = f"🔍 <b>Еженедельный анализ фильтра лидов</b>\nПроверено: <b>{total}</b> лидов (последние 7 дней)\n\n"
+
+        if summary:
+            await self.main_client.send_message("me", header + summary[:3500], parse_mode="html")
+        else:
+            await self.main_client.send_message("me", header + all_reports[0][:3500], parse_mode="html")
+
+        logger.info(f"✅ Анализ качества фильтра завершён: {total} лидов в {len(batches)} батчах")
