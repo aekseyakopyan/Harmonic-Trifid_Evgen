@@ -69,7 +69,7 @@ monitored_only = filters.create(_monitored_only)
 
 # ── Обработчики событий ───────────────────────────────────────────────────────
 @client.on_message(
-    filters.incoming & filters.private & not_blacklisted & monitored_only
+    filters.incoming & filters.private & not_blacklisted
 )
 async def on_new_message(client: Client, message: Message):
     """Handle all incoming private messages."""
