@@ -434,18 +434,16 @@ class GwenCommander:
                             continue
 
                         except errors.PeerFlood as e:
-                            # PEER_FLOOD = Telegram ограничил отправку новым контактам (спам-ограничение)
-                            logger.warning(f"🚨 PEER_FLOOD для {v_contact}: {e}")
+                            # PEER_FLOOD = временный rate limit на новые контакты (НЕ глобальный бан)
+                            # SpamBot не поможет — он видит только глобальные блокировки
+                            logger.warning(f"⏳ PEER_FLOOD для {v_contact}: {e}")
                             # НЕ помечаем как failed — оставляем для повторной попытки
-                            # Проверяем статус аккаунта через SpamBot
-                            status_report = await self.check_account_health()
                             await supervisor_notifier.send_error(
-                                f"🚨 <b>PEER_FLOOD!</b> Telegram ограничил отправку новым контактам.\n\n"
-                                f"Последний контакт: @{v_contact}\n"
-                                f"SpamBot: <i>{status_report[:300]}</i>\n\n"
-                                f"Пауза 1 час, после — попытка продолжить."
+                                f"⏳ <b>PEER_FLOOD</b> — временный лимит Telegram на новые контакты.\n"
+                                f"Это не бан, SpamBot не поможет — просто rate limit.\n"
+                                f"Пауза 30 мин, после — продолжаем автоматически."
                             )
-                            await asyncio.sleep(3600)  # Пауза 1 час
+                            await asyncio.sleep(1800)  # Пауза 30 минут
                             continue
 
                         except (errors.UserPrivacyRestricted, errors.PeerIdInvalid, errors.ChatWriteForbidden) as e:
