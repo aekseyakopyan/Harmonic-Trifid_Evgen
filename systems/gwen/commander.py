@@ -126,6 +126,9 @@ class GwenCommander:
 
             # Ретроспективная рассылка по старым лидам из history_buyer_leads.db
             asyncio.create_task(self._run_history_leads_outreach())
+
+            # Еженедельный анализ качества фильтра (каждый понедельник 10:00 МСК)
+            asyncio.create_task(self._run_weekly_lead_quality_check())
             
         except Exception as e:
             logger.error(f"Failed to start Gwen Commander: {e}")
@@ -1420,3 +1423,107 @@ class GwenCommander:
                 logger.error(f"Gwen health loop error: {e}")
             
             await asyncio.sleep(60)
+
+    async def _run_weekly_lead_quality_check(self):
+        """Еженедельный анализ принятых лидов — запускается каждый понедельник в 10:00 МСК."""
+        while True:
+            try:
+                now = now_msk()
+                # Ближайший понедельник 10:00
+                days_until_monday = (7 - now.weekday()) % 7 or 7
+                target = now.replace(hour=10, minute=0, second=0, microsecond=0)
+                target += timedelta(days=days_until_monday)
+                wait_sec = (target - now).total_seconds()
+                logger.info(f"📅 Следующий анализ качества фильтра через {int(wait_sec // 3600)}ч")
+                await asyncio.sleep(wait_sec)
+
+                await self._analyze_lead_quality()
+            except Exception as e:
+                logger.error(f"Weekly lead quality check error: {e}")
+                await asyncio.sleep(3600)
+
+    async def _analyze_lead_quality(self):
+        """Передаёт Гвен принятые лиды за последние 7 дней для оценки корректности фильтрации."""
+        from systems.gwen.notifier import supervisor_notifier
+        from core.ai_engine.llm_client import llm_client
+
+        try:
+            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT hash, text, direction, source
+                FROM vacancies
+                WHERE status = 'accepted'
+                  AND DATE(last_seen) >= DATE('now', '-7 days')
+                ORDER BY last_seen DESC
+                LIMIT 80
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            logger.error(f"_analyze_lead_quality: DB error: {e}")
+            return
+
+        if not rows:
+            logger.info("📭 Нет принятых лидов за неделю — анализ пропущен")
+            return
+
+        logger.info(f"🔍 Гвен анализирует {len(rows)} принятых лидов за неделю...")
+
+        leads_block = "\n\n".join([
+            f"[{h[:8]}] Направление: {direction or '?'}\n{(text or '').strip()[:300]}"
+            for h, text, direction, source in rows
+        ])
+
+        system_prompt = (
+            "Ты — Гвен, аналитик фильтра лидов для цифрового агентства Evium "
+            "(услуги: SEO, контекстная реклама Яндекс Директ, реклама на Авито, SMM/таргет ВКонтакте, разработка сайтов). "
+            "Твоя задача: выявить ошибки фильтрации — лиды, которые фильтр принял, но не должен был."
+        )
+
+        prompt = f"""Ниже список вакансий/запросов, которые наш фильтр принял как целевые лиды за последние 7 дней.
+
+ЦЕЛЕВОЙ ЛИД — это человек или компания, которая ИЩЕТ подрядчика для: SEO-продвижения, настройки Яндекс Директ, рекламы на Авито, таргета ВКонтакте, разработки сайта, SMM.
+
+НЕ ЦЕЛЕВЫЕ (ошибки фильтра):
+- Предложения своих услуг ("я занимаюсь...", "поможем вам...", "#помогу")
+- Продажа чего-либо, не связанного с нашими услугами
+- Спам, боты, автоответы
+- Офтоп (вакансии не из нашей сферы)
+- Запросы на услуги, которых у нас нет (дизайн, 1С, видео и т.д., если нет сайтов в направлении)
+
+---
+{leads_block}
+---
+
+Ответь строго в формате:
+
+## Ошибки фильтрации
+- [<ID>] <причина почему это не целевой лид>
+(если ошибок нет — напиши "Ошибок не обнаружено")
+
+## Паттерны проблем
+- <что объединяет ложные срабатывания>
+
+## Рекомендации
+- Добавить в стоп-список: "<фраза>" — <объяснение>
+
+## Оценка качества фильтра за неделю: <X>/10
+"""
+
+        try:
+            report = await llm_client.generate_response(prompt, system_prompt)
+            if not report:
+                logger.error("_analyze_lead_quality: LLM вернул пустой ответ")
+                return
+
+            total = len(rows)
+            header = (
+                f"🔍 <b>Еженедельный анализ фильтра лидов</b>\n"
+                f"Проверено лидов: <b>{total}</b> (последние 7 дней)\n\n"
+            )
+            await self.main_client.send_message("me", header + report[:3500], parse_mode="html")
+            logger.info("✅ Еженедельный анализ качества фильтра отправлен")
+
+        except Exception as e:
+            logger.error(f"_analyze_lead_quality: LLM error: {e}")
