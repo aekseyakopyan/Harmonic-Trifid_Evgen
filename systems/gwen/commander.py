@@ -434,14 +434,20 @@ class GwenCommander:
                             continue
 
                         except errors.PeerFlood as e:
-                            # PEER_FLOOD = временный rate limit на новые контакты (НЕ глобальный бан)
-                            # SpamBot не поможет — он видит только глобальные блокировки
+                            # PEER_FLOOD = временный rate limit на новые контакты
                             logger.warning(f"⏳ PEER_FLOOD для {v_contact}: {e}")
                             # НЕ помечаем как failed — оставляем для повторной попытки
+                            # Отправляем /start в SpamBot дважды — стандартный способ снять ограничение
+                            try:
+                                await self.main_client.send_message("SpamBot", "/start")
+                                await asyncio.sleep(3)
+                                await self.main_client.send_message("SpamBot", "/start")
+                                logger.info("✅ Отправил /start в SpamBot дважды")
+                            except Exception as sb_err:
+                                logger.warning(f"Не удалось написать SpamBot: {sb_err}")
                             await supervisor_notifier.send_error(
-                                f"⏳ <b>PEER_FLOOD</b> — временный лимит Telegram на новые контакты.\n"
-                                f"Это не бан, SpamBot не поможет — просто rate limit.\n"
-                                f"Пауза 30 мин, после — продолжаем автоматически."
+                                f"⏳ <b>PEER_FLOOD</b> — временный rate limit на новые контакты.\n"
+                                f"Написал /start в SpamBot 2 раза. Пауза 30 мин, после — продолжаем."
                             )
                             await asyncio.sleep(1800)  # Пауза 30 минут
                             continue
