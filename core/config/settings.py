@@ -66,7 +66,9 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     # Лучшая модель цена/качество (Уровень GPT-4, но в 20 раз дешевле)
     OPENROUTER_MODEL: str = "deepseek/deepseek-chat"
-    
+    # Модель для Гвен-супервизора (бесплатная — только оценка качества)
+    SUPERVISOR_MODEL: str = "google/gemini-2.0-flash-exp:free"
+
     # Список моделей (платные, используют кредиты OpenRouter)
     FALLBACK_MODELS: List[str] = [
         "google/gemini-2.0-flash-001",       # Очень быстрая и дешевая

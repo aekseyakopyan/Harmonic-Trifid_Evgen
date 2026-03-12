@@ -2,8 +2,7 @@
 AI Supervisor - Проверяет исходящие сообщения бота на наличие технических ошибок.
 """
 import httpx
-import asyncio
-from typing import Optional, Dict
+from typing import Dict
 from core.utils.logger import logger
 
 
@@ -110,61 +109,87 @@ class GwenSupervisor:
     
     async def _ai_check(self, text: str) -> Dict:
         """
-        Глубокая проверка качества через OpenRouter.
+        Оценка качества ответа через OpenRouter (быстрая модель-супервизор).
         """
-        system_prompt = "Ты — ИИ-супервизор Гвен. Твоя задача — гарантировать качество ответов менеджера (ИИ)."
-        prompt = f"""Проверь сообщение менеджера клиенту:
-"{text}"
+        import json
+        import re
 
-КРИТЕРИИ КАЧЕСТВА:
-1. Тон: Уверенный, но не высокомерный.
-2. Безопасность: Никаких технических данных, JSON, кода, упоминаний что "я искусственный интеллект" (если не спросили).
-3. Полезность: Ответ должен быть осмысленным.
+        system_prompt = (
+            "Ты — Гвен, супервизор цифрового агентства Evium (SEO, контекстная реклама, Авито, SMM, сайты). "
+            "Алексей — менеджер-бот, ведёт холодные продажи через Telegram. "
+            "Твоя задача: проверить его ответ клиенту перед отправкой."
+        )
 
-ФОРМАТ ОТВЕТА (JSON):
-{{
-    "verdict": "ALLOW" или "RETRY",
-    "reason": "Краткая причина",
-    "correction_instruction": "Инструкция для ИИ, что именно исправить (если RETRY)"
-}}
+        prompt = f"""Проверь сообщение Алексея клиенту:
 
-Если сообщение хорошее — верни ALLOW.
-Если есть проблемы (грубость, робо-стайл, бред) — верни RETRY и напиши, как переделать.
-"""
+\"\"\"{text}\"\"\"
+
+КРИТЕРИИ (проверяй по порядку):
+
+1. BLOCK — немедленная блокировка, если в тексте:
+   - Упоминание ИИ, GPT, Claude, OpenAI, LLM, нейросети
+   - Python-код, traceback, JSON-объекты, технические ошибки
+   - Фраза "я не могу", "как языковая модель", "мои данные ограничены"
+
+2. RETRY — перегенерация, если:
+   - Начинается с "Вижу, что", "Заметил, что", "Увидел запрос", "Вижу ваш запрос"
+   - Содержит домен или URL (кроме teletype.in — это разрешённые кейсы)
+   - Более одного вопроса в сообщении
+   - Обращение по имени в приветствии (например "Привет, Татьяна!")
+   - Ответ явно не по теме запроса клиента
+   - Текст > 10 предложений или < 2 предложений
+   - Агрессивное давление ("купи прямо сейчас", "последний шанс")
+
+3. ALLOW — всё остальное.
+
+Ответь строго JSON:
+{{"verdict": "ALLOW" | "BLOCK" | "RETRY", "reason": "одна фраза", "correction": "что исправить (только для RETRY)"}}"""
+
         try:
-            raw_response = await llm_client.generate_response(prompt, system_prompt=system_prompt)
-            if not raw_response:
-                return {"verdict": "ALLOW", "reason": "Model returned empty response", "confidence": 0.5}
+            payload = {
+                "model": settings.SUPERVISOR_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 200,
+                "temperature": 0.1
+            }
+            headers = {
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://telegram-bot.local",
+                "X-Title": "Gwen Supervisor"
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json=payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                raw = response.json()["choices"][0]["message"]["content"].strip()
 
-            import json
-            import re
-            
-            # Попытка извлечь JSON если он обернут в ```json
-            json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
             if json_match:
-                raw_response = json_match.group(0)
-
-            try:
-                result = json.loads(raw_response)
+                result = json.loads(json_match.group(0))
                 verdict = result.get("verdict", "ALLOW").upper()
-                
                 if verdict == "RETRY":
                     return {
-                        "verdict": "RETRY", 
+                        "verdict": "RETRY",
                         "reason": result.get("reason", "Quality issues"),
-                        "correction": result.get("correction_instruction", "Rewrite to function more naturally.")
+                        "correction": result.get("correction", "Rewrite more naturally.")
                     }
-                else:
-                    return {"verdict": "ALLOW", "reason": "Approved by Gwen", "confidence": 0.9}
-                    
-            except json.JSONDecodeError:
-                if "RETRY" in raw_response.upper():
-                     return {"verdict": "RETRY", "reason": "Gwen flagged content", "correction": "Check tone and contents."}
-                return {"verdict": "ALLOW", "reason": "Gwen approved (text format)", "confidence": 0.8}
-                    
+                elif verdict == "BLOCK":
+                    return {"verdict": "BLOCK", "reason": result.get("reason", "Blocked by Gwen AI")}
+                return {"verdict": "ALLOW", "reason": "Approved by Gwen"}
+
+            # Не смогли разобрать JSON — пропускаем
+            return {"verdict": "ALLOW", "reason": "Gwen response unparseable"}
+
         except Exception as e:
-            logger.warning(f"Gwen AI check skipped due to error: {e}")
-            return {"verdict": "ALLOW", "reason": "Check skipped", "confidence": 0.5}
+            logger.warning(f"Gwen AI check skipped: {e}")
+            return {"verdict": "ALLOW", "reason": f"Check skipped: {e}"}
             
     async def generate_chat_response(self, user_message: str, history: list = None) -> str:
         """
