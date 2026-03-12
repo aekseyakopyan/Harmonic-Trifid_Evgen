@@ -24,6 +24,44 @@ message_buffers = {}
 user_data_cache = {}
 debounce_tasks = {}
 
+# Сильные паттерны — 1 совпадение = блок (однозначные признаки бота/системы)
+_STRONG_BOT_PATTERNS = [
+    "вакансия здесь размещена",
+    "вакансии здесь размещены",
+    "неизвестная команда",
+    "доступные команды:",
+    "login code:",
+    "this code can be used to log in",
+]
+
+# Слабые паттерны — нужно 2 совпадения
+_WEAK_BOT_PATTERNS = [
+    "vakansii",
+    "freelance_rabota",
+    "советуем",
+    "если вам нужен фриланс чат",
+]
+
+# Telegram system sender IDs (777000 = Telegram официальный, 42777 = Telegram уведомления)
+_SYSTEM_SENDER_IDS = {777000, 42777}
+
+def _is_vacancy_bot_autoreply(text: str) -> bool:
+    """Определяет авто-ответ от бота-агрегатора вакансий или системное сообщение."""
+    t = text.lower()
+    # 1 сильный паттерн = блок
+    for p in _STRONG_BOT_PATTERNS:
+        if p in t:
+            return True
+    # 2 слабых паттерна = блок
+    weak_hits = sum(1 for p in _WEAK_BOT_PATTERNS if p in t)
+    if weak_hits >= 2:
+        return True
+    # Специфичный ID-паттерн агрегаторов вакансий
+    import re
+    if re.search(r'id\s*:\s*[a-z0-9/ ]{10,}', t):
+        return True
+    return False
+
 
 async def handle_user_action(client: Client, message: Message):
     """
@@ -51,6 +89,10 @@ async def handle_incoming_message(message: Message, client: Client):
     if message.outgoing:
         return
 
+    # Игнорируем системные сообщения Telegram (коды входа, уведомления)
+    if sender_id in _SYSTEM_SENDER_IDS:
+        return
+
     # Извлекаем текст
     text = ""
     if message.voice:
@@ -65,6 +107,22 @@ async def handle_incoming_message(message: Message, client: Client):
         text = message.text or message.caption or ""
 
     if not text:
+        return
+
+    # Детектируем авто-ответы спам-ботов агрегаторов вакансий
+    if _is_vacancy_bot_autoreply(text):
+        logger.info(f"🤖 Спам-бот авто-ответ от {sender_id} — блокируем и не отвечаем")
+        async with async_session() as session:
+            stmt = select(Lead).where(Lead.telegram_id == sender_id)
+            result = await session.execute(stmt)
+            lead = result.scalars().first()
+            if not lead:
+                lead = Lead(telegram_id=sender_id, username=getattr(sender, 'username', None),
+                            full_name=getattr(sender, 'first_name', 'Bot'))
+                session.add(lead)
+            lead.is_human_managed = True
+            lead.handover_reason = "spam_bot_autoreply"
+            await session.commit()
         return
 
     # Добавляем в буфер
