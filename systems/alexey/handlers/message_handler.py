@@ -17,7 +17,7 @@ from core.knowledge_base.retriever import KnowledgeRetriever
 from core.utils.logger import logger
 from core.config.settings import settings
 from core.utils.handover import handover_manager
-from systems.gwen.gwen_supervisor import gwen_supervisor
+
 
 # Глобальные контейнеры для накопления сообщений
 message_buffers = {}
@@ -338,55 +338,9 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             message_count=msg_count + 1
         )
 
-        # 5. LLM Generation Loop with Supervisor
-        MAX_RETRIES = 3
-        current_system_prompt = system_prompt
-        ai_response_text = ""
-
-        for attempt in range(MAX_RETRIES):
-            logger.info(f"🔄 Generation attempt {attempt+1}/{MAX_RETRIES}...")
-            ai_response_text = await llm_client.generate_response(user_prompt, current_system_prompt)
-
-            if not ai_response_text:
-                break
-
-            check = await gwen_supervisor.check_message(ai_response_text)
-            verdict = check.get("verdict", "ALLOW")
-
-            if verdict == "ALLOW":
-                logger.info("✅ Gwen approved response.")
-                break
-            elif verdict == "BLOCK":
-                logger.warning(f"⛔️ Gwen HARD BLOCKED response: {check.get('reason')}")
-                msg_log = MessageLog(
-                    lead_id=lead.id, direction="outgoing", content=ai_response_text,
-                    status="blocked", error_message=check.get("reason"),
-                    intent=classification.get("intent")
-                )
-                session.add(msg_log)
-                await session.commit()
-                try:
-                    from systems.gwen.notifier import supervisor_notifier
-                    await supervisor_notifier.notify_block(
-                        f"{sender_name} (@{sender_username})",
-                        ai_response_text, check
-                    )
-                except Exception:
-                    pass
-                return
-            elif verdict == "RETRY":
-                logger.info(f"🔧 Gwen requested RETRY: {check.get('reason')}")
-                correction = check.get('correction', 'Improve quality.')
-                current_system_prompt += f"\n\n[SUPERVISOR FEEDBACK]: {check.get('reason')}. Fix: {correction}"
-        else:
-            if verdict == "RETRY":
-                msg_log = MessageLog(
-                    lead_id=lead.id, direction="outgoing", content=ai_response_text,
-                    status="failed_quality", error_message="Max retries reached on Gwen check"
-                )
-                session.add(msg_log)
-                await session.commit()
-                return
+        # 5. LLM Generation
+        logger.info("🔄 Generating response...")
+        ai_response_text = await llm_client.generate_response(user_prompt, system_prompt)
 
         if not ai_response_text:
             logger.error(f"Critical: LLM failed to generate response for user {sender_id}.")
