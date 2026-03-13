@@ -298,13 +298,12 @@ async def run_follow_ups(client: TelegramClient):
                                 logger.error(f"Failed to generate follow-up for {lead.telegram_id}. Skipping.")
                                 continue
 
-                            sent_msg = None
                             status = "sent"
                             error_msg = None
-                            
+
                             # ПРОВЕРКА: только физлица — выполняется внутри smart_send_message
                             recipient = lead.username or lead.telegram_id
-                            
+
                             try:
                                 # Use smart_send_message for follow-ups as well
                                 sent = await smart_send_message(
@@ -314,9 +313,7 @@ async def run_follow_ups(client: TelegramClient):
                                     simulate_typing=True,
                                     typing_duration=humanity_manager.get_typing_duration(follow_up_text)
                                 )
-                                if sent:
-                                    sent_msg = sent # smart_send_message returns the sent message object if successful
-                                else:
+                                if not sent:
                                     status = "failed"
                                     error_msg = "smart_send_message failed"
                             except Exception as e:
@@ -341,7 +338,7 @@ async def run_follow_ups(client: TelegramClient):
                                 content=follow_up_text,
                                 intent="follow_up",
                                 status=status,
-                                telegram_msg_id=sent_msg.id if sent_msg else None,
+                                telegram_msg_id=None,
                                 error_message=error_msg
                             )
                             session.add(out_msg)
