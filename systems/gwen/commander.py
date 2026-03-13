@@ -199,7 +199,7 @@ class GwenCommander:
                     SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
                     FROM vacancies 
                     WHERE status = 'accepted' AND (response IS NULL OR response = "")
-                    ORDER BY last_seen DESC LIMIT 1
+                    ORDER BY last_seen ASC LIMIT 20
                 """)
                 new_vacancies = cursor.fetchall()
                 conn.close()
@@ -255,12 +255,15 @@ class GwenCommander:
                         cursor.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                         conn.commit()
                         conn.close()
-                        try:
-                            _dir = v_dict.get('direction') or '—'
-                            _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
-                            await supervisor_notifier.send_error(f"⚠️ нет контакта | {_dir} | {_req}")
-                        except Exception:
-                            pass
+                        # Не спамим уведомлениями если их много (только для горячих)
+                        if v_priority > 0:
+                            try:
+                                _dir = v_dict.get('direction') or '—'
+                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
+                                await supervisor_notifier.send_error(f"⚠️ нет контакта | {_dir} | {_req}")
+                            except Exception:
+                                pass
+                        await asyncio.sleep(2) # Короткая пауза для пропуска
                         continue
 
                     # АВТОГЕНЕРАЦИЯ ЧЕРНОВИКА если его нет
@@ -355,6 +358,7 @@ class GwenCommander:
                                 cursor.execute("UPDATE vacancies SET response = 'skipped_duplicate' WHERE hash = ?", (v_hash,))
                                 conn.commit()
                                 conn.close()
+                                await asyncio.sleep(2)
                                 continue
 
                             logger.info(f"🚀 Гвен автоматически отправляет отклик в {v_contact}")
@@ -428,6 +432,11 @@ class GwenCommander:
                                 await supervisor_notifier.send_error(f"✅ @{_login} | {_dir} | {_req}")
                             except Exception:
                                 pass
+                            
+                            # УСПЕШНАЯ ОТПРАВКА -> ДЛИННАЯ ПАУЗА (спам-защита)
+                            pause_time = random.randint(65, 85)
+                            logger.info(f"⏳ Следующий отклик через {pause_time} сек...")
+                            await asyncio.sleep(pause_time)
 
                         except errors.FloodWait as e:
                             logger.warning(f"⏳ FloodWait: нужно подождать {e.value} сек.")
@@ -508,7 +517,6 @@ class GwenCommander:
                                 await supervisor_notifier.send_error(f"❌ @{_login} | {_dir} | {_req} | {str(e)[:80]}")
                             except Exception:
                                 pass
-                    else:
                         # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
 
@@ -518,11 +526,7 @@ class GwenCommander:
                         cursor.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
                         conn.commit()
                         conn.close()
-                    
-                    # Потоковый режим (по 1 лиду): пауза около 1 минуты
-                    pause_time = random.randint(55, 65)
-                    logger.info(f"⏳ Следующий поиск лидов через {pause_time} сек...")
-                    await asyncio.sleep(pause_time)
+                        await asyncio.sleep(2)
                     
             except Exception as e:
                 logger.error(f"Gwen outreach monitor error: {e}")
