@@ -316,26 +316,86 @@ async def tail_log(
 
 @app.post("/api/controls/restart")
 async def restart_service(service: str = Query("alexey", enum=["alexey"])):
-    """Перезапустить сервис через systemctl."""
-    unit_map = {"alexey": "alexey-bot"}
-    unit = unit_map.get(service)
-    if not unit:
+    """Перезапустить сервис (nohup)."""
+    project_root = str(PROJECT_ROOT)
+    venv_python = str(PROJECT_ROOT / "venv" / "bin" / "python3")
+
+    service_map = {
+        "alexey": {
+            "pattern": "systems/alexey/main.py",
+            "script": f"systems/alexey/main.py",
+            "log": f"{project_root}/logs/alexey.log",
+            "pid": f"{project_root}/pids/alexey.pid",
+        }
+    }
+    svc = service_map.get(service)
+    if not svc:
         raise HTTPException(status_code=400, detail="Неизвестный сервис")
 
     try:
-        result = subprocess.run(
-            ["systemctl", "restart", unit],
-            capture_output=True, text=True, timeout=15
+        # Kill existing process
+        subprocess.run(
+            ["pkill", "-f", svc["pattern"]],
+            capture_output=True, text=True, timeout=5
         )
-        success = result.returncode == 0
+        import time
+        time.sleep(1)
+
+        # Start new process detached
+        env = os.environ.copy()
+        env["PYTHONPATH"] = project_root
+        with open(svc["log"], "a") as logf:
+            proc = subprocess.Popen(
+                [venv_python, f"{project_root}/{svc['script']}"],
+                stdout=logf, stderr=logf,
+                env=env, cwd=project_root,
+                start_new_session=True
+            )
+        # Save PID
+        Path(svc["pid"]).write_text(str(proc.pid))
+
         return {
-            "success": success,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "message": "Перезапущен" if success else "Ошибка перезапуска"
+            "success": True,
+            "pid": proc.pid,
+            "message": f"Перезапущен (PID {proc.pid})"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/controls/update-restart")
+async def update_and_restart_all():
+    """Git pull + перезапустить Alexey + перезапустить этот сервис."""
+    project_root = str(PROJECT_ROOT)
+    venv_python = str(PROJECT_ROOT / "venv" / "bin" / "python3")
+
+    script = f"""#!/bin/bash
+sleep 2
+cd {project_root}
+git pull origin main 2>&1
+export PYTHONPATH={project_root}
+pkill -f "systems/alexey/main.py" 2>/dev/null || true
+sleep 1
+nohup {venv_python} {project_root}/systems/alexey/main.py >> {project_root}/logs/alexey.log 2>&1 &
+echo $! > {project_root}/pids/alexey.pid
+sleep 1
+pkill -f "systems/miniapp/api.py" 2>/dev/null || true
+sleep 1
+nohup {venv_python} {project_root}/systems/miniapp/api.py >> {project_root}/logs/miniapp.log 2>&1 &
+echo $! > {project_root}/pids/miniapp.pid
+"""
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(script)
+        script_path = f.name
+    os.chmod(script_path, 0o755)
+    subprocess.Popen(
+        ["bash", script_path],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"success": True, "message": "Update+restart запущен, сервисы поднимутся через ~5 сек"}
 
 @app.get("/api/server/info")
 async def get_server_info():
