@@ -1,5 +1,5 @@
 from datetime import datetime
-from pyrogram import Client, filters
+from pyrogram import Client, filters, raw
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 from core.config.settings import settings
@@ -107,6 +107,7 @@ async def on_new_message(client: Client, message: Message):
 async def on_outgoing_message(client: Client, message: Message):
     """Detect when human takes over the chat."""
     chat_id = message.chat.id
+    logger.info(f"📤 Outgoing private message to {chat_id} (msg_id={message.id})")
 
     async with async_session() as session:
         stmt = select(Lead).where(Lead.telegram_id == chat_id)
@@ -127,6 +128,14 @@ async def on_outgoing_message(client: Client, message: Message):
 async def on_channel_message(client: Client, message: Message):
     """Логируем события из каналов/групп (для мониторинга вакансий Gwen)."""
     logger.info(f"📩 New event from {message.chat.id}. is_private=False")
+
+
+@client.on_raw_update()
+async def on_raw_update(_client: Client, update, _users, _chats):
+    """Debug: логируем все сырые обновления от Telegram."""
+    update_type = type(update).__name__
+    if "NewMessage" in update_type or "Message" in update_type:
+        logger.info(f"🔍 RAW UPDATE: {update_type}")
 
 
 async def main():
