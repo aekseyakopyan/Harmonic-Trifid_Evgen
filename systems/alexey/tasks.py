@@ -271,10 +271,21 @@ async def run_follow_ups(client: TelegramClient):
                             logger.info(f"Lead {lead.username} is human managed. Skipping follow-up.")
                             continue
 
-                        msg_stmt = select(MessageLog).where(MessageLog.lead_id == lead.id).order_by(MessageLog.created_at.desc()).limit(1)
+                        msg_stmt = select(MessageLog).where(MessageLog.lead_id == lead.id).order_by(MessageLog.created_at.desc()).limit(20)
                         msg_result = await session.execute(msg_stmt)
-                        last_msg = msg_result.scalars().first()
-                        
+                        recent_msgs = msg_result.scalars().all()
+                        last_msg = recent_msgs[0] if recent_msgs else None
+
+                        # Если лид уже отвечал (пришло входящее) — не нужен follow-up
+                        # Alexey мог быть выключен и не обработал reply — сбрасываем уровень
+                        has_replied = any(m.direction == 'incoming' for m in recent_msgs)
+                        if has_replied:
+                            logger.info(f"⏭ Follow-up пропущен: {lead.username or lead.telegram_id} уже ответил — сбрасываем уровень")
+                            lead.follow_up_level = 0
+                            lead.follow_up_sent_at = None
+                            await session.commit()
+                            continue
+
                         if last_msg and last_msg.direction == 'outgoing':
                             logger.info(f"Sending follow-up level {level} to {lead.full_name} ({lead.telegram_id})")
                             

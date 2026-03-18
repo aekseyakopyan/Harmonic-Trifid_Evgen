@@ -1,42 +1,67 @@
 #!/bin/bash
 set -e
 
-# Автоопределение директории скрипта
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
 echo "🚀 Запуск Harmonic Trifid (Full Stack)"
+echo "======================================"
 
-# Создание необходимых директорий
 mkdir -p logs pids backups cache/llm logs/outreach
 
-# 1. Alexey (Userbot)
-echo "🤖 Запуск Alexey Userbot..."
-export PYTHONPATH=. && nohup ./venv/bin/python3 systems/alexey/main.py > logs/alexey.log 2>&1 &
-echo $! > pids/alexey.pid
+# Функция: запускает процесс только если не запущен (защита от дублей)
+start_once() {
+    local name="$1"
+    local pidfile="pids/${name}.pid"
+    shift
 
-# 2. Today Parser (Real-time monitoring)
-echo "📡 Запуск Today Parser..."
-export PYTHONPATH=. && nohup ./venv/bin/python3 main.py parse today > logs/parser.log 2>&1 &
-echo $! > pids/parser.pid
+    if [ -f "$pidfile" ]; then
+        local old_pid=$(cat "$pidfile")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            echo "⚠️  $name уже запущен (PID $old_pid) — пропускаем"
+            return 0
+        fi
+        rm -f "$pidfile"
+    fi
 
-# 3. Chat Joiner (Excel based)
-echo "🤝 Запуск Chat Joiner..."
-# Запускаем с аргументами, чтобы избежать interactive input
-export PYTHONPATH=. && nohup ./venv/bin/python3 apps/chat_joiner.py --file assets/chat_lists/chats_1600.xlsx --col Чаты > logs/chat_joiner.log 2>&1 &
-echo $! > pids/chat_joiner.pid
+    echo "▶  $name..."
+    export PYTHONPATH=.
+    nohup "$@" > "logs/${name}.log" 2>&1 &
+    echo $! > "$pidfile"
+    echo "   PID: $!"
+}
 
-# 4. Gwen Supervisor
-echo "🛡️ Запуск Gwen Supervisor..."
-export PYTHONPATH=. && nohup ./venv/bin/python3 systems/gwen/bot.py > logs/gwen.log 2>&1 &
-echo $! > pids/gwen.pid
-
-# 5. Mini App API
-echo "📊 Запуск Mini App API..."
-export PYTHONPATH=. && nohup ./venv/bin/python3 systems/miniapp/api.py > logs/miniapp.log 2>&1 &
-echo $! > pids/miniapp.pid
-
-echo "✅ Все 5 компонентов запущены в фоне!"
 echo ""
-echo "Проверка:"
-ps aux | grep -E "python3|alexey|gwen|api.py|parser|joiner" | grep -v grep | grep Harmonic-Trifid
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  МОДУЛЬ 1: КОММУНИКАЦИЯ С ЛЮДЬМИ + ОТКЛИКИ"
+echo "  Pyrogram userbot — получает входящие,"
+echo "  отвечает от лица Алексея, через GwenCommander"
+echo "  отправляет первичные отклики на вакансии."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+start_once "alexey" ./venv/bin/python3 systems/alexey/main.py
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  МОДУЛЬ 2: ПАРСИНГ / ПОИСК ЛИДОВ"
+echo "  Мониторит чаты → фильтрует вакансии"
+echo "  → кладёт в vacancies.db для Module 1."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+start_once "parser" ./venv/bin/python3 main.py parse today
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  ВСПОМОГАТЕЛЬНЫЕ СЕРВИСЫ"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+start_once "gwen_bot" ./venv/bin/python3 systems/gwen/bot.py
+start_once "miniapp"  ./venv/bin/python3 systems/miniapp/api.py
+
+echo ""
+echo "✅ Запуск завершён!"
+echo ""
+echo "Процессы:"
+ps aux | grep -E "Harmonic-Trifid_Evgen.*(alexey|parser|gwen|miniapp)" | grep -v grep | awk '{print "  PID " $2 " | " $11 " " $12}'
+echo ""
+echo "Логи:"
+echo "  tail -f logs/alexey.log    ← Диалоги + отклики (Module 1)"
+echo "  tail -f logs/parser.log    ← Парсинг вакансий (Module 2)"
+echo "  tail -f logs/gwen_bot.log  ← Supervisor бот"

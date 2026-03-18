@@ -316,7 +316,7 @@ class GwenCommander:
                                 conn.close()
                                 continue
 
-                            # ПРОВЕРКА НА ДУБЛИКАТЫ В ЧАТЕ (Схожесть с прошлыми откликами)
+                            # ПРОВЕРКА: не в активном диалоге и не контактировали недавно
                             is_duplicate = False
                             try:
                                 async with async_session() as session:
@@ -324,30 +324,45 @@ class GwenCommander:
                                     entity_id = entity.id if entity else None
                                     if not entity_id:
                                         raise Exception(f"User not found: {target}")
-                                    
-                                    # Ищем лид и его историю сообщений
+
+                                    # Ищем лид и его историю сообщений (все направления)
                                     stmt = select(Lead).where(Lead.telegram_id == entity_id)
                                     res = await session.execute(stmt)
                                     lead = res.scalars().first()
-                                    
+
                                     if lead:
-                                        # Берем последние 10 исходящих сообщений с типом outreach
                                         stmt_msgs = select(MessageLog).where(
                                             MessageLog.lead_id == lead.id,
-                                            MessageLog.direction == "outgoing",
-                                            MessageLog.intent == "outreach"
-                                        ).order_by(MessageLog.created_at.desc()).limit(10)
+                                        ).order_by(MessageLog.created_at.desc()).limit(20)
                                         res_msgs = await session.execute(stmt_msgs)
-                                        past_messages = res_msgs.scalars().all()
-                                        
-                                        if past_messages:
-                                            detector = get_duplicate_detector()
-                                            for past_msg in past_messages:
-                                                similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
-                                                if similarity > 0.85:
-                                                    logger.info(f"⏭ Пропуск дубликата: Отклик в {target} слишком похож на предыдущий (sim={similarity:.2f})")
-                                                    is_duplicate = True
-                                                    break
+                                        all_messages = res_msgs.scalars().all()
+
+                                        if all_messages:
+                                            # Если человек уже ответил — активный диалог, не спамим
+                                            has_replied = any(m.direction == "incoming" for m in all_messages)
+                                            if has_replied:
+                                                logger.info(f"⏭ Пропуск активного диалога: {target} уже отвечал нам")
+                                                is_duplicate = True
+                                            else:
+                                                # Если контактировали менее 14 дней назад — пропускаем
+                                                last_out = next((m for m in all_messages if m.direction == "outgoing"), None)
+                                                if last_out and last_out.created_at:
+                                                    days_since = (datetime.utcnow() - last_out.created_at).days
+                                                    if days_since < 14:
+                                                        logger.info(f"⏭ Пропуск: {target} уже получил отклик {days_since} дн. назад")
+                                                        is_duplicate = True
+
+                                                # Если черновик слишком похож на прошлые — тоже пропускаем
+                                                if not is_duplicate:
+                                                    past_outreach = [m for m in all_messages if m.direction == "outgoing" and m.intent == "outreach"]
+                                                    if past_outreach:
+                                                        detector = get_duplicate_detector()
+                                                        for past_msg in past_outreach:
+                                                            similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
+                                                            if similarity > 0.85:
+                                                                logger.info(f"⏭ Пропуск дубликата: отклик для {target} похож на предыдущий (sim={similarity:.2f})")
+                                                                is_duplicate = True
+                                                                break
                             except Exception as check_err:
                                 logger.error(f"Error during duplicate outreach check: {check_err}")
 
