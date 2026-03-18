@@ -19,7 +19,7 @@ def now_msk() -> datetime:
     return datetime.now(MSK)
 from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
-from coам re.database.models import MessageLog, Lead
+from core.database.models import MessageLog, Lead
 from core.config.settings import settings
 from core.utils.logger import logger
 from core.utils.health import health_monitor
