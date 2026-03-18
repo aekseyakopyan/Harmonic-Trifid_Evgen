@@ -19,7 +19,7 @@ def now_msk() -> datetime:
     return datetime.now(MSK)
 from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
-from core.database.models import MessageLog, Lead
+from coам re.database.models import MessageLog, Lead
 from core.config.settings import settings
 from core.utils.logger import logger
 from core.utils.health import health_monitor
@@ -446,30 +446,18 @@ class GwenCommander:
                             continue
 
                         except errors.PeerFlood as e:
-                            # PEER_FLOOD = временный rate limit на новые контакты
-                            logger.warning(f"⏳ PEER_FLOOD для {v_contact}: {e}")
-                            # НЕ помечаем как failed — оставляем для повторной попытки
-                            # Пишем /start дважды в SpamBot и читаем ответ
-                            spambot_reply = await self.check_account_health()
-                            is_free = any(phrase in spambot_reply.lower() for phrase in [
-                                "no limits", "free as a bird", "свободен", "ограничений нет"
-                            ])
-                            if is_free:
-                                # SpamBot подтвердил — лимитов нет, продолжаем без паузы
-                                logger.info("✅ SpamBot: лимитов нет — продолжаем без паузы")
-                                await supervisor_notifier.send_error(
-                                    f"⚡️ <b>PEER_FLOOD</b> снят — SpamBot подтвердил отсутствие лимитов. Продолжаем."
-                                )
-                            else:
-                                # Реальное ограничение — ждём 30 минут
-                                logger.warning(f"⏳ SpamBot: есть ограничения — пауза 30 мин. Ответ: {spambot_reply[:100]}")
-                                await supervisor_notifier.send_error(
-                                    f"⏳ <b>PEER_FLOOD</b> — SpamBot говорит об ограничениях.\n"
-                                    f"<i>{spambot_reply[:200]}</i>\n"
-                                    f"Пауза 30 мин, после — продолжаем."
-                                )
-                                await asyncio.sleep(1800)
-                            continue
+                            # PEER_FLOOD = аккаунт временно заблокирован Telegram для новых контактов
+                            # SpamBot НЕ обнаруживает PEER_FLOOD (он видит только глобальные баны)
+                            # Все следующие контакты тоже получат PEER_FLOOD — останавливаем outreach
+                            logger.warning(f"🚫 PEER_FLOOD для {v_contact}: {e}")
+                            await supervisor_notifier.send_error(
+                                f"🚫 <b>PEER_FLOOD</b> — Telegram ограничил рассылку новым контактам.\n"
+                                f"SpamBot не видит PEER_FLOOD (только глобальные баны).\n"
+                                f"Пауза outreach 2 часа, затем возобновим."
+                            )
+                            logger.warning("⏳ PEER_FLOOD: останавливаем outreach на 2 часа...")
+                            await asyncio.sleep(7200)
+                            break
 
                         except (errors.UserPrivacyRestricted, errors.PeerIdInvalid, errors.ChatWriteForbidden) as e:
                             logger.error(f"⚠️ Ограничение отправки для {v_contact}: {e}")
