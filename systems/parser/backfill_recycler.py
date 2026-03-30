@@ -5,6 +5,7 @@ Backfill Recycler - перерабатывает старые сообщения
 
 import asyncio
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone

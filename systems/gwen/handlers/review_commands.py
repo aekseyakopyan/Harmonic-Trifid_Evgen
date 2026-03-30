@@ -65,10 +65,11 @@ async def cmd_review_batch(message: Message):
     await show_next_lead(message)
 
 
-async def show_next_lead(message: Message):
+async def show_next_lead(message: Message, user_id: int = None):
     """Показать следующий лид из review batch"""
-    user_id = message.from_user.id
-    session = review_sessions.get(user_id)
+    # user_id can be passed explicitly (e.g. from a callback where message.from_user is the bot)
+    effective_user_id = user_id if user_id is not None else message.from_user.id
+    session = review_sessions.get(effective_user_id)
     
     if not session:
         await message.answer("❌ Нет активной сессии разметки. Используйте /review_batch")
@@ -79,7 +80,7 @@ async def show_next_lead(message: Message):
     
     if idx >= len(samples):
         # Batch завершен
-        await complete_review_session(message)
+        await complete_review_session(message, user_id=effective_user_id)
         return
     
     lead = samples[idx]
@@ -123,8 +124,12 @@ async def handle_label(callback: CallbackQuery):
     
     # Parse callback data
     parts = callback.data.split("_")
-    action = parts[1]
-    lead_id = int(parts[2])
+    try:
+        action = parts[1]
+        lead_id = int(parts[2])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Ошибка данных кнопки", show_alert=True)
+        return
     
     if action == "skip":
         logger.info("lead_skipped", lead_id=lead_id, user_id=user_id)
@@ -154,13 +159,13 @@ async def handle_label(callback: CallbackQuery):
     
     # Следующий лид
     session["current_index"] += 1
-    await show_next_lead(callback.message)
+    await show_next_lead(callback.message, user_id=callback.from_user.id)
 
 
-async def complete_review_session(message: Message):
+async def complete_review_session(message: Message, user_id: int = None):
     """Завершение review session"""
-    user_id = message.from_user.id
-    session = review_sessions.get(user_id)
+    effective_user_id = user_id if user_id is not None else message.from_user.id
+    session = review_sessions.get(effective_user_id)
     
     if not session:
         return
@@ -170,7 +175,7 @@ async def complete_review_session(message: Message):
     
     logger.info(
         "review_session_completed",
-        user_id=user_id,
+        user_id=effective_user_id,
         labeled_count=labeled_count,
         total_count=total_count
     )
@@ -200,7 +205,7 @@ async def complete_review_session(message: Message):
         )
     
     # Очистить session
-    del review_sessions[user_id]
+    del review_sessions[effective_user_id]
 
 
 @router.message(Command("review_stats"))

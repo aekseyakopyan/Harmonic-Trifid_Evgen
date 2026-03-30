@@ -171,92 +171,100 @@ class TelegramRateLimiter:
     async def acquire_pm(self, user_id: int, tokens: float = 1.0) -> float:
         """
         Ожидает доступности для отправки личного сообщения.
-        
+
         Args:
             user_id: ID пользователя
             tokens: Количество токенов (по умолчанию 1)
-        
+
         Returns:
             float: Фактическое время ожидания в секундах
         """
+        # Phase 1: check limits under the lock, collect wait times — do NOT sleep inside the lock
         async with self._lock:
             self.stats['total_requests'] += 1
-            total_wait = 0.0
-            
-            # Проверяем глобальный лимит
-            success, wait_time = self.global_pm_bucket.consume(tokens)
-            if not success:
-                logger.debug(f"Global PM rate limit reached, waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-                total_wait += wait_time
-                self.global_pm_bucket.consume(tokens)  # Повторная попытка после ожидания
-            
-            # Проверяем лимит для пользователя
+            success_global, wait_global = self.global_pm_bucket.consume(tokens)
             user_bucket = self._get_user_bucket(user_id)
-            success, wait_time = user_bucket.consume(tokens)
-            if not success:
-                logger.debug(f"User {user_id} rate limit reached, waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-                total_wait += wait_time
-                user_bucket.consume(tokens)
-            
-            if total_wait > 0:
+            success_user, wait_user = user_bucket.consume(tokens)
+
+        total_wait = 0.0
+
+        # Phase 2: sleep OUTSIDE the lock to avoid blocking all other callers
+        if not success_global:
+            logger.debug(f"Global PM rate limit reached, waiting {wait_global:.2f}s")
+            await asyncio.sleep(wait_global)
+            total_wait += wait_global
+            async with self._lock:
+                self.global_pm_bucket.consume(tokens)
+
+        if not success_user:
+            logger.debug(f"User {user_id} rate limit reached, waiting {wait_user:.2f}s")
+            await asyncio.sleep(wait_user)
+            total_wait += wait_user
+            async with self._lock:
+                self._get_user_bucket(user_id).consume(tokens)
+
+        if total_wait > 0:
+            async with self._lock:
                 self.stats['rejected_requests'] += 1
                 self.stats['total_wait_time'] += total_wait
-            
-            # Периодическая очистка
+
+        async with self._lock:
             await self._maybe_cleanup()
-            
-            return total_wait
+
+        return total_wait
     
     async def acquire_group(self, chat_id: int, tokens: float = 1.0) -> float:
         """
         Ожидает доступности для отправки сообщения в группу.
-        
+
         Args:
             chat_id: ID чата
             tokens: Количество токенов
-        
+
         Returns:
             float: Фактическое время ожидания в секундах
         """
         async with self._lock:
             self.stats['total_requests'] += 1
-            
             success, wait_time = self.global_group_bucket.consume(tokens)
-            if not success:
-                logger.debug(f"Group rate limit reached for {chat_id}, waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
+
+        # Sleep OUTSIDE the lock to avoid blocking other callers
+        if not success:
+            logger.debug(f"Group rate limit reached for {chat_id}, waiting {wait_time:.2f}s")
+            await asyncio.sleep(wait_time)
+            async with self._lock:
                 self.stats['rejected_requests'] += 1
                 self.stats['total_wait_time'] += wait_time
                 self.global_group_bucket.consume(tokens)
-                return wait_time
-            
+            return wait_time
+
+        async with self._lock:
             await self._maybe_cleanup()
-            return 0.0
+        return 0.0
     
     async def can_send_pm(self, user_id: int) -> Tuple[bool, float]:
         """
         Проверяет возможность отправки личного сообщения без ожидания.
-        
+
         Args:
             user_id: ID пользователя
-        
+
         Returns:
             Tuple[bool, float]: (можно_отправить, время_ожидания)
         """
         async with self._lock:
-            # Проверяем глобальный лимит
-            global_ok, global_wait = self.global_pm_bucket.consume(0)  # Peek без потребления
-            if not global_ok:
-                return False, global_wait
-            
-            # Проверяем лимит пользователя
+            # Peek at token levels without consuming (consume(0) always returns True — use peek())
+            global_tokens = self.global_pm_bucket.peek()
+            if global_tokens < 1.0:
+                wait_time = (1.0 - global_tokens) / self.global_pm_bucket.refill_rate
+                return False, wait_time
+
             user_bucket = self._get_user_bucket(user_id)
-            user_ok, user_wait = user_bucket.consume(0)
-            if not user_ok:
-                return False, user_wait
-            
+            user_tokens = user_bucket.peek()
+            if user_tokens < 1.0:
+                wait_time = (1.0 - user_tokens) / user_bucket.refill_rate
+                return False, wait_time
+
             return True, 0.0
     
     async def _maybe_cleanup(self) -> None:

@@ -12,7 +12,7 @@ const STATUS_OPTIONS = ['new', 'contacted', 'qualified', 'lost']
 
 export default function LeadCardPage() {
   const { id } = useParams<{ id: string }>()
-  const leadId = Number(id)
+  const leadId = id ? Number(id) : 0
   const qc = useQueryClient()
   const navigate = useNavigate()
 

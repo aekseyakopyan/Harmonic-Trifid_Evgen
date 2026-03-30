@@ -73,6 +73,10 @@ class TelegramHistoryParser:
         # Основная база данных
         self.db = VacancyDatabase()
 
+        # Paths for raw/leads databases used by _init_databases
+        self.raw_db_path = "data/db/history_raw_messages.db"
+        self.leads_db_path = "data/db/history_buyer_leads.db"
+
         self.seen_messages = set()
         
         self.stats = {
@@ -114,6 +118,7 @@ class TelegramHistoryParser:
             ''')
 
     async def initialize(self):
+        self._init_databases()
         await self.client.start()
         await self.db.init_db()
         print("✅ Машина времени подключена (Pyrogram, UNIFIED_DB)")
@@ -140,7 +145,7 @@ class TelegramHistoryParser:
                 msg_count = 0
                 
                 try:
-                    async for message in self.client.get_chat_history(d.chat.id, limit=None):
+                    async for message in self.client.get_chat_history(dialog.chat.id, limit=None):
                         if not message.text: continue
                         if message.date < self.stop_date: break
                         

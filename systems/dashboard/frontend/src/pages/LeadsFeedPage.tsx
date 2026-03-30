@@ -65,6 +65,7 @@ export default function LeadsFeedPage() {
     a.href = url
     a.download = 'leads.csv'
     a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 100)
   }
 
   const leads: Lead[] = data?.items ?? []
