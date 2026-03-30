@@ -140,12 +140,8 @@ class ResilientLLMClient:
             )
     
     async def _call_ollama(self, prompt: str, text: str, timeout: int) -> dict:
-        with self.ollama_breaker.calling():
-            return await self.primary_client.call_ollama(
-                prompt=prompt,
-                text=text,
-                timeout=timeout
-            )
+        # Ollama не настроен в LLMClient — пропускаем, уходим на heuristic fallback
+        raise NotImplementedError("Ollama не сконфигурирован")
     
     def _heuristic_only(self) -> dict:
         logger.warning(

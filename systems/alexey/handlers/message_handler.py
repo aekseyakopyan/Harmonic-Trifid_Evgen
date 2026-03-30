@@ -1,6 +1,8 @@
 import os
+import re
 import asyncio
 import json
+import random
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -9,20 +11,34 @@ from pyrogram.errors import UserIsBlocked, FloodWait
 from systems.gwen import create_interceptor
 from core.database.connection import async_session
 from core.database.models import Lead, MessageLog
-from sqlalchemy import select, update, and_
+from sqlalchemy import select, update, and_, desc
 from core.classifier.intent_classifier import MessageClassifier
 from core.ai_engine.llm_client import llm_client
 from core.ai_engine.prompt_builder import prompt_builder
 from core.knowledge_base.retriever import KnowledgeRetriever
 from core.utils.logger import logger
+from core.utils.smart_sender import smart_send_message
+from core.utils.humanity import humanity_manager
 from core.config.settings import settings
 from core.utils.handover import handover_manager
 
 
 # Глобальные контейнеры для накопления сообщений
-message_buffers = {}
-user_data_cache = {}
-debounce_tasks = {}
+message_buffers: dict = {}
+user_data_cache: dict = {}
+debounce_tasks: dict = {}
+
+# По одному asyncio.Lock на sender_id — предотвращает race condition буфера
+_buffer_locks: dict = {}
+# Очередь сообщений у которых LLM не ответил — для повторной попытки через 5 мин
+_llm_retry_queue: dict = {}  # sender_id -> {text, sender, message, attempt, retry_at}
+
+
+def _get_buffer_lock(sender_id: int) -> asyncio.Lock:
+    """Возвращает (или создаёт) Lock для данного sender_id."""
+    if sender_id not in _buffer_locks:
+        _buffer_locks[sender_id] = asyncio.Lock()
+    return _buffer_locks[sender_id]
 
 # Сильные паттерны — 1 совпадение = блок (однозначные признаки бота/системы)
 _STRONG_BOT_PATTERNS = [
@@ -32,6 +48,21 @@ _STRONG_BOT_PATTERNS = [
     "доступные команды:",
     "login code:",
     "this code can be used to log in",
+    # Агрегаторы вакансий / фриланс-чаты
+    "здесь публикуются заказы",
+    "здесь публикуются вакансии",
+    "здесь публикуются резюме",
+    "под каждым постом есть кнопка",
+    "разместить резюме/вакансию",
+    "разместить резюме или вакансию",
+    "это бесплатный фриланс чат",
+    "бесплатный фриланс чат",
+    # Канал-промо ответы (только уникальные — не дублировать с _FREELANCER_REPLY_STRONG)
+    "подробнее в нашем канале",
+    "кейсы в нашем канале",
+    "смотрите наши работы в",
+    "больше работ в нашем",
+    "все проекты в канале",
 ]
 
 # Слабые паттерны — нужно 2 совпадения
@@ -40,7 +71,54 @@ _WEAK_BOT_PATTERNS = [
     "freelance_rabota",
     "советуем",
     "если вам нужен фриланс чат",
+    "freelance_rabota_chat",
+    "фриланс чат",
+    "публикуются заказы",
 ]
+
+# Паттерны ответа исполнителя/фрилансера на outreach
+_FREELANCER_REPLY_STRONG = [
+    "подробнее в канале",
+    "все подробности в канале",
+    "больше работ в канале",
+    "кейсы в канале",
+    "смотрите в канале",
+    "записывайтесь через бот",
+    "все в телеграм боте",
+]
+
+_FREELANCER_REPLY_WEAK = [
+    "мои кейсы",
+    "моё портфолио",
+    "мое портфолио",
+    "готов взяться",
+    "готов помочь",
+    "могу настроить",
+    "могу создать",
+    "могу помочь",
+    "напишите мне в лс",
+    "пишите мне в лс",
+    "стоимость моих услуг",
+    "мой прайс",
+    "расценки в лс",
+    "беру проекты",
+    "принимаю заказы",
+    "занимаюсь настройкой",
+    "занимаюсь продвижением",
+    "занимаюсь созданием",
+    # "портфолио" убрано: клиент может спросить "покажи своё портфолио" — ложный блок
+    "мои работы",
+]
+
+
+def _is_freelancer_response(text: str) -> bool:
+    """Определяет, является ли ответ реакцией исполнителя (не клиента)."""
+    t = text.lower()
+    for p in _FREELANCER_REPLY_STRONG:
+        if p in t:
+            return True
+    weak_hits = sum(1 for p in _FREELANCER_REPLY_WEAK if p in t)
+    return weak_hits >= 2
 
 # Telegram system sender IDs (777000 = Telegram официальный, 42777 = Telegram уведомления)
 _SYSTEM_SENDER_IDS = {777000, 42777}
@@ -57,7 +135,6 @@ def _is_vacancy_bot_autoreply(text: str) -> bool:
     if weak_hits >= 2:
         return True
     # Специфичный ID-паттерн агрегаторов вакансий
-    import re
     if re.search(r'id\s*:\s*[a-z0-9/ ]{10,}', t):
         return True
     return False
@@ -125,25 +202,42 @@ async def handle_incoming_message(message: Message, client: Client):
             await session.commit()
         return
 
-    # Добавляем в буфер
-    if sender_id not in message_buffers:
-        message_buffers[sender_id] = []
-    message_buffers[sender_id].append(text)
+    # Детектируем ответы исполнителей/фрилансеров (не клиентов)
+    if _is_freelancer_response(text):
+        logger.info(f"👔 Ответ исполнителя от {sender_id} — останавливаем диалог")
+        async with async_session() as session:
+            stmt = select(Lead).where(Lead.telegram_id == sender_id)
+            result = await session.execute(stmt)
+            lead = result.scalars().first()
+            if not lead:
+                lead = Lead(telegram_id=sender_id, username=getattr(sender, 'username', None),
+                            full_name=getattr(sender, 'first_name', 'Unknown'))
+                session.add(lead)
+            lead.is_human_managed = True
+            lead.handover_reason = "freelancer_executor_response"
+            await session.commit()
+        return
 
-    if sender_id not in user_data_cache:
-        user_data_cache[sender_id] = {}
-    user_data_cache[sender_id].update({
-        'last_action_at': datetime.utcnow(),
-        'sender': sender,
-        'message': message
-    })
+    # Потокобезопасное добавление в буфер
+    async with _get_buffer_lock(sender_id):
+        if sender_id not in message_buffers:
+            message_buffers[sender_id] = []
+        message_buffers[sender_id].append(text)
 
-    # Управляем debounce таймером
-    if sender_id in debounce_tasks:
-        debounce_tasks[sender_id].cancel()
+        if sender_id not in user_data_cache:
+            user_data_cache[sender_id] = {}
+        user_data_cache[sender_id].update({
+            'last_action_at': datetime.utcnow(),
+            'sender': sender,
+            'message': message
+        })
 
-    task = asyncio.create_task(wait_and_process(client, sender_id))
-    debounce_tasks[sender_id] = task
+        # Управляем debounce таймером
+        if sender_id in debounce_tasks:
+            debounce_tasks[sender_id].cancel()
+
+        task = asyncio.create_task(wait_and_process(client, sender_id))
+        debounce_tasks[sender_id] = task
 
 
 async def wait_and_process(client: Client, sender_id: int):
@@ -222,7 +316,6 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
         lead.follow_up_sent_at = None
 
         # 1.1 History
-        from sqlalchemy import desc
         history_stmt = select(MessageLog).where(MessageLog.lead_id == lead.id).order_by(desc(MessageLog.created_at)).limit(10)
         history_result = await session.execute(history_stmt)
         history_msgs = history_result.scalars().all()
@@ -352,6 +445,22 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             )
             session.add(msg_log)
             await session.commit()
+            # Планируем повторную попытку через 5 минут (максимум 2 попытки)
+            attempt = _llm_retry_queue.get(sender_id, {}).get("attempt", 0)
+            if attempt < 2:
+                _llm_retry_queue[sender_id] = {
+                    "text": full_text, "sender": sender,
+                    "message": message, "attempt": attempt + 1,
+                }
+                asyncio.create_task(_llm_retry_after(client, sender_id, delay=300))
+                logger.info(f"📅 LLM retry #{attempt + 1} запланирован для {sender_id} через 5 мин")
+            # Отправляем fallback чтобы клиент не завис в тишине
+            fallback = "Получил ваше сообщение, отвечу чуть позже 🙏"
+            try:
+                await smart_send_message(client, sender_id, fallback)
+                logger.info(f"📤 Fallback sent to {sender_id} (LLM unavailable)")
+            except Exception as fb_err:
+                logger.warning(f"Fallback send failed: {fb_err}")
             return
 
         # 5.1 Detect mentioned cases
@@ -371,8 +480,6 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
         )
         session.add(msg_log)
 
-        from core.utils.humanity import humanity_manager
-
         # 7. Humanity — Reading delay
         reading_delay = humanity_manager.get_reading_delay(full_text)
         await asyncio.sleep(reading_delay)
@@ -383,14 +490,10 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
         except Exception as e:
             logger.warning(f"Failed to mark message as read: {e}")
 
-        # 7.2 Prepare chunks
-        chunks = humanity_manager.split_into_human_chunks(ai_response_text)
-
         sent_msg = None
         status = "sent"
 
         # 7.4 Handle tags
-        import re
         clean_response = ai_response_text
 
         if "[ASK_ADMIN:" in ai_response_text:
@@ -429,8 +532,10 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
 
         chunks = humanity_manager.split_into_human_chunks(clean_response)
 
-        try:
-            for i, chunk in enumerate(chunks):
+        i = 0
+        while i < len(chunks):
+            chunk = chunks[i]
+            try:
                 duration = humanity_manager.get_typing_duration(chunk)
                 await client.send_chat_action(chat_id, ChatAction.TYPING)
                 await asyncio.sleep(duration)
@@ -449,30 +554,29 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
                     handover_manager.mark_as_automated(sent_msg.id)
 
                 if i < len(chunks) - 1:
-                    import random
                     await asyncio.sleep(random.uniform(0.7, 1.8))
 
-        except FloodWait as e:
-            wait_sec = e.value + 2
-            logger.warning(f"⏳ FloodWait {e.value}s — ожидаем {wait_sec}s и повторяем последний chunk...")
-            await asyncio.sleep(wait_sec)
-            try:
-                sent_msg = await client.send_message(chat_id, chunks[-1])
-                if sent_msg:
-                    handover_manager.mark_as_automated(sent_msg.id)
-            except Exception as retry_err:
-                logger.error(f"Повторная отправка после FloodWait не удалась: {retry_err}")
+                i += 1
+
+            except FloodWait as e:
+                wait_sec = e.value + 2
+                logger.warning(f"⏳ FloodWait {e.value}s на chunk {i}/{len(chunks)} — ожидаем {wait_sec}s...")
+                await asyncio.sleep(wait_sec)
+                # Не инкрементируем i — повторяем тот же chunk
+
+            except UserIsBlocked:
+                logger.error(f"❌ UserIsBlocked при отправке chunk {i}")
                 status = "failed"
-        except UserIsBlocked as e:
-            logger.error(f"❌ UserIsBlocked: {e}")
-            status = "failed"
-        except Exception as e:
-            logger.error(f"Error sending message with humanity: {e}")
-            status = "failed"
+                break
+
+            except Exception as e:
+                logger.error(f"Error sending chunk {i}: {e}")
+                status = "failed"
+                break
 
         # 8. Log Outgoing
         out_msg_log = MessageLog(
-            lead_id=lead.id, direction="outgoing", content=ai_response_text,
+            lead_id=lead.id, direction="outgoing", content=clean_response,
             status=status, telegram_msg_id=sent_msg.id if sent_msg else None
         )
         session.add(out_msg_log)
@@ -484,16 +588,45 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             new_history = history_text + f"\nКлиент: {full_text}\nАлексей: {ai_response_text}"
             analysis_prompt = prompt_builder.build_analysis_prompt(new_history, lead.style_profile or "", lead.context_memory or "")
             analysis_json = await llm_client.generate_response(analysis_prompt, "Ты — аналитик стиля общения.")
-            start, end = analysis_json.find('{'), analysis_json.rfind('}') + 1
-            if start != -1 and end != -1:
-                data = json.loads(analysis_json[start:end])
-                lead.style_profile = data.get("style_profile", lead.style_profile)
-                lead.context_memory = data.get("context_memory", lead.context_memory)
-                await session.commit()
-        except Exception:
-            pass
+            if not analysis_json:
+                logger.warning(f"Adaptive Learning: LLM вернул пустой ответ для lead {sender_id}")
+            else:
+                start, end = analysis_json.find('{'), analysis_json.rfind('}') + 1
+                if start != -1 and end > start:
+                    data = json.loads(analysis_json[start:end])
+                    lead.style_profile = data.get("style_profile", lead.style_profile)
+                    lead.context_memory = data.get("context_memory", lead.context_memory)
+                    await session.commit()
+                else:
+                    logger.warning(f"Adaptive Learning: не удалось извлечь JSON для lead {sender_id}: {analysis_json[:100]}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Adaptive Learning: невалидный JSON для lead {sender_id}: {e}")
+        except Exception as e:
+            logger.error(f"Adaptive Learning error for lead {sender_id}: {e}")
 
 
 async def handle_message_read(message):
     """Обработка прочтения сообщений (Pyrogram callback)."""
     pass  # В Pyrogram read receipts обрабатываются иначе, через raw updates
+
+
+async def _llm_retry_after(client: Client, sender_id: int, delay: int = 300):
+    """
+    Повторная попытка LLM-ответа через `delay` секунд.
+    Вызывается как asyncio.Task когда LLM не смог ответить с первого раза.
+    """
+    await asyncio.sleep(delay)
+    retry_data = _llm_retry_queue.pop(sender_id, None)
+    if not retry_data:
+        return  # Пользователь написал снова — буфер уже обработан
+
+    logger.info(f"🔁 LLM retry #{retry_data['attempt']} для {sender_id}")
+    try:
+        await process_full_thought(
+            client=client,
+            message=retry_data["message"],
+            sender=retry_data["sender"],
+            full_text=retry_data["text"],
+        )
+    except Exception as e:
+        logger.error(f"LLM retry failed for {sender_id}: {e}")

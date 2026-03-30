@@ -2,7 +2,7 @@
 AI Supervisor - Проверяет исходящие сообщения бота на наличие технических ошибок.
 """
 import httpx
-from typing import Dict
+from typing import Any, Dict
 from core.utils.logger import logger
 
 
@@ -21,7 +21,7 @@ class GwenSupervisor:
         self.model = settings.OPENROUTER_MODEL
         self.enabled = True
         
-    async def check_message(self, message_text: str, recipient_info: Dict = None) -> Dict[str, any]:
+    async def check_message(self, message_text: str, recipient_info: Dict = None) -> Dict[str, Any]:
         """
         Гвен проверяет сообщение.
         Returns:

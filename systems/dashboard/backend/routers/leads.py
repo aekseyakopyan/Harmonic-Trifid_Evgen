@@ -3,10 +3,13 @@ from fastapi.responses import StreamingResponse
 from db.connection import get_db
 from models.lead import LeadOut, LeadPatch, LeadListResponse
 from core.ws_manager import manager
+from core.config import VACANCIES_DB_PATH
 from typing import Optional
 import json
 import csv
 import io
+import aiosqlite
+import os
 
 router = APIRouter()
 
@@ -140,6 +143,72 @@ async def archive_lead(lead_id: int):
         await db.commit()
     await manager.broadcast("leads", {"event": "lead_archived", "id": lead_id})
     return {"ok": True}
+
+
+@router.post("/bulk")
+async def bulk_patch_leads(lead_ids: list[int], action: str, value: str = ""):
+    """Массовое обновление лидов. action: set_tier, set_status, archive"""
+    if not lead_ids:
+        return {"updated": 0}
+    placeholders = ",".join("?" * len(lead_ids))
+    async with get_db() as db:
+        if action == "set_tier" and value in ("HOT", "WARM", "COLD"):
+            await db.execute(
+                f"UPDATE leads SET tier=?, updated_at=datetime('now') WHERE id IN ({placeholders})",
+                [value] + lead_ids,
+            )
+        elif action == "set_status" and value in ("new", "contacted", "qualified", "lost"):
+            await db.execute(
+                f"UPDATE leads SET status=?, updated_at=datetime('now') WHERE id IN ({placeholders})",
+                [value] + lead_ids,
+            )
+        elif action == "archive":
+            await db.execute(
+                f"UPDATE leads SET is_archived=1, updated_at=datetime('now') WHERE id IN ({placeholders})",
+                lead_ids,
+            )
+        await db.execute(
+            "INSERT INTO audit_log(action,entity_type,entity_id,new_value) VALUES(?,?,?,?)",
+            [f"bulk_{action}", "lead", 0, f"ids={lead_ids[:10]},value={value}"],
+        )
+        await db.commit()
+    await manager.broadcast("leads", {"event": "bulk_updated", "ids": lead_ids})
+    return {"updated": len(lead_ids)}
+
+
+@router.get("/{lead_id}/vacancies")
+async def lead_vacancies(lead_id: int):
+    """Возвращает оригинальные тексты вакансий из vacancies.db для данного лида."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT * FROM leads WHERE id = ?", [lead_id])
+    if not rows:
+        raise HTTPException(404, "Lead not found")
+    lead = dict(rows[0])
+    username = lead.get("username")
+    telegram_id = lead.get("telegram_id")
+
+    if not os.path.exists(VACANCIES_DB_PATH):
+        return []
+
+    try:
+        async with aiosqlite.connect(VACANCIES_DB_PATH) as vdb:
+            vdb.row_factory = aiosqlite.Row
+            results = []
+            if telegram_id:
+                rows2 = await (await vdb.execute(
+                    "SELECT id, text, source_channel, created_at, status FROM vacancies WHERE sender_id=? ORDER BY created_at DESC LIMIT 10",
+                    [str(telegram_id)]
+                )).fetchall()
+                results.extend([dict(r) for r in rows2])
+            if username and not results:
+                rows2 = await (await vdb.execute(
+                    "SELECT id, text, source_channel, created_at, status FROM vacancies WHERE text LIKE ? ORDER BY created_at DESC LIMIT 5",
+                    [f"%@{username}%"]
+                )).fetchall()
+                results.extend([dict(r) for r in rows2])
+            return results
+    except Exception as e:
+        return []
 
 
 @router.get("/{lead_id}/history")

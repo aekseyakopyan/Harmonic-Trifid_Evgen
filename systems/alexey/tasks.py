@@ -2,7 +2,7 @@ import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, delete, and_, or_, String, cast
 from core.database.connection import async_session
 from core.database.models import Lead, MessageLog
 from core.ai_engine.llm_client import llm_client
@@ -19,6 +19,9 @@ MSK = timezone(timedelta(hours=3))
 
 def now_msk():
     return datetime.now(MSK).replace(tzinfo=None)
+
+# Глобальный лок: не даём двум задачам одновременно резервировать одного лида
+_outreach_lock = asyncio.Lock()
 
 # Модули анализа вакансий
 from systems.parser.vacancy_analyzer import VacancyScorer, ContactExtractor, NicheDetector
@@ -112,7 +115,7 @@ async def run_automated_outreach(client: Client):
                             lead_stmt = select(Lead).where(
                                 or_(
                                     Lead.username == clean_recipient,
-                                    Lead.telegram_id.cast(Lead.telegram_id.type.__class__) == clean_recipient
+                                    cast(Lead.telegram_id, String) == str(clean_recipient)
                                 )
                             )
                             l_result = await session.execute(lead_stmt)
@@ -120,36 +123,56 @@ async def run_automated_outreach(client: Client):
                             
                             now = datetime.utcnow()
                             
-                            if existing_lead:
-                                # ПРОВЕРКА: Если диалогом уже управляет человек - пропускаем
-                                if getattr(existing_lead, 'is_human_managed', False):
-                                    logger.info(f"Lead {recipient} is human managed. Skipping.")
-                                    continue
-                                
-                                # ПРОВЕРКА: Если мы уже делали outreach в последние 24 часа — пропускаем
-                                if existing_lead.last_outreach_at and (now - existing_lead.last_outreach_at).total_seconds() < 86400:
-                                    logger.info(f"Lead {recipient} already contacted recently. Skipping.")
-                                    continue
+                            async with _outreach_lock:
+                                # Инвалидируем кэш сессии перед повторным запросом
+                                session.expire_all()
+                                l_result2 = await session.execute(lead_stmt)
+                                existing_lead = l_result2.scalars().first()
 
-                                # Если мы уже общались с ним последние 24 часа (живое общение) — пропускаем
-                                if existing_lead.last_interaction and (now - existing_lead.last_interaction).total_seconds() < 86400:
-                                    logger.info(f"Lead {recipient} has recent interaction. Skipping.")
-                                    continue
-                                    
-                                # РЕЗЕРВИРОВАНИЕ: бронируем лида прямо сейчас
-                                existing_lead.last_outreach_at = now
-                                await session.commit()
-                            else:
-                                # Создаем нового лида и сразу бронируем
-                                existing_lead = Lead(
-                                    username=clean_recipient if isinstance(recipient, str) and not clean_recipient.isdigit() else None,
-                                    telegram_id=int(clean_recipient) if str(clean_recipient).isdigit() else None,
-                                    full_name=str(recipient),
-                                    last_outreach_at=now
-                                )
-                                session.add(existing_lead)
-                                await session.commit()
-                                await session.refresh(existing_lead)
+                                if existing_lead:
+                                    # ПРОВЕРКА: Если диалогом уже управляет человек — пропускаем навсегда
+                                    if getattr(existing_lead, 'is_human_managed', False):
+                                        logger.info(f"Lead {recipient} is human managed. Skipping.")
+                                        continue
+
+                                    # ПРОВЕРКА: Встреча уже назначена — не беспокоим
+                                    if getattr(existing_lead, 'meeting_scheduled', False):
+                                        logger.info(f"Lead {recipient} has meeting scheduled. Skipping.")
+                                        continue
+
+                                    # ПРОВЕРКА: Прошли все уровни follow-up (цикл завершён) — не повторяем
+                                    if getattr(existing_lead, 'follow_up_level', 0) >= 3:
+                                        logger.info(f"Lead {recipient} exhausted follow-up cycle (level={existing_lead.follow_up_level}). Skipping.")
+                                        continue
+
+                                    # ПРОВЕРКА: Уже делали outreach в последние 30 дней — не повторяем
+                                    OUTREACH_COOLDOWN_DAYS = 30
+                                    if existing_lead.last_outreach_at and (now - existing_lead.last_outreach_at).total_seconds() < OUTREACH_COOLDOWN_DAYS * 86400:
+                                        logger.info(f"Lead {recipient} already contacted within {OUTREACH_COOLDOWN_DAYS}d. Skipping.")
+                                        continue
+
+                                    # ПРОВЕРКА: Живое общение в последние 30 дней — не прерываем диалог
+                                    if existing_lead.last_interaction and (now - existing_lead.last_interaction).total_seconds() < OUTREACH_COOLDOWN_DAYS * 86400:
+                                        logger.info(f"Lead {recipient} has recent interaction within {OUTREACH_COOLDOWN_DAYS}d. Skipping.")
+                                        continue
+
+                                    # РЕЗЕРВИРОВАНИЕ: бронируем лида прямо сейчас под локом
+                                    existing_lead.last_outreach_at = now
+                                    # Direction-aware: не затираем приоритет если уже есть направление
+                                    if not getattr(existing_lead, 'niche', None) or analysis['relevance_score'] > (existing_lead.priority or 0):
+                                        existing_lead.priority = max(getattr(existing_lead, 'priority', 0) or 0, analysis['relevance_score'])
+                                    await session.commit()
+                                else:
+                                    # Создаем нового лида и сразу бронируем
+                                    existing_lead = Lead(
+                                        username=clean_recipient if isinstance(recipient, str) and not clean_recipient.isdigit() else None,
+                                        telegram_id=int(clean_recipient) if str(clean_recipient).isdigit() else None,
+                                        full_name=str(recipient),
+                                        last_outreach_at=now
+                                    )
+                                    session.add(existing_lead)
+                                    await session.commit()
+                                    await session.refresh(existing_lead)
                         
                         logger.info(f"Targeting recipient: {recipient}")
                         
@@ -271,21 +294,10 @@ async def run_follow_ups(client: TelegramClient):
                             logger.info(f"Lead {lead.username} is human managed. Skipping follow-up.")
                             continue
 
-                        msg_stmt = select(MessageLog).where(MessageLog.lead_id == lead.id).order_by(MessageLog.created_at.desc()).limit(20)
+                        msg_stmt = select(MessageLog).where(MessageLog.lead_id == lead.id).order_by(MessageLog.created_at.desc()).limit(1)
                         msg_result = await session.execute(msg_stmt)
-                        recent_msgs = msg_result.scalars().all()
-                        last_msg = recent_msgs[0] if recent_msgs else None
-
-                        # Если лид уже отвечал (пришло входящее) — не нужен follow-up
-                        # Alexey мог быть выключен и не обработал reply — сбрасываем уровень
-                        has_replied = any(m.direction == 'incoming' for m in recent_msgs)
-                        if has_replied:
-                            logger.info(f"⏭ Follow-up пропущен: {lead.username or lead.telegram_id} уже ответил — сбрасываем уровень")
-                            lead.follow_up_level = 0
-                            lead.follow_up_sent_at = None
-                            await session.commit()
-                            continue
-
+                        last_msg = msg_result.scalars().first()
+                        
                         if last_msg and last_msg.direction == 'outgoing':
                             logger.info(f"Sending follow-up level {level} to {lead.full_name} ({lead.telegram_id})")
                             
@@ -366,4 +378,30 @@ async def run_follow_ups(client: TelegramClient):
             except Exception as e:  
                 pass
             
-        await asyncio.sleep(3600) 
+        await asyncio.sleep(3600)
+
+
+async def run_message_log_cleanup():
+    """
+    Фоновая задача: удаляет записи MessageLog старше 90 дней раз в сутки.
+    Предотвращает бесконечный рост bot_data.db.
+    """
+    RETENTION_DAYS = 90
+    while True:
+        try:
+            # Запускаем в 03:00 МСК
+            now = now_msk()
+            if now.hour == 3 and now.minute < 30:
+                cutoff = datetime.utcnow() - timedelta(days=RETENTION_DAYS)
+                async with async_session() as session:
+                    result = await session.execute(
+                        delete(MessageLog).where(MessageLog.created_at < cutoff)
+                    )
+                    deleted = result.rowcount
+                    await session.commit()
+                    if deleted:
+                        logger.info(f"🗑 MessageLog cleanup: удалено {deleted} записей старше {RETENTION_DAYS} дней")
+                await asyncio.sleep(3600)  # не повторять в тот же час
+        except Exception as e:
+            logger.error(f"MessageLog cleanup error: {e}")
+        await asyncio.sleep(1800)

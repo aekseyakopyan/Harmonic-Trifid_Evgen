@@ -606,7 +606,7 @@ async def main():
             if parser and hasattr(parser, 'client'):
                 try:
                     await parser.client.stop()
-                except:
+                except Exception:
                     pass
             print("⏳ Ожидание 60 секунд перед полной перезагрузкой клиента...")
             await asyncio.sleep(60)

@@ -3,9 +3,35 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { leadsApi, dialogsApi } from '../api/client'
 import { Lead } from '../types'
-import { ArrowLeft, RefreshCw, Archive, MessageSquare, Clock } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Archive, MessageSquare, Clock, FileText, ExternalLink, Send } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { ru } from 'date-fns/locale'
+
+function ScoreButtons({ label, value, onChange }: { label: string; value: number | null; onChange: (v: number) => void }) {
+  return (
+    <div>
+      <label className="text-xs text-muted mb-1 block">{label}</label>
+      <div className="flex gap-1">
+        {[1, 2, 3, 4, 5].map(n => (
+          <button
+            key={n}
+            onClick={() => onChange(n)}
+            className={`w-8 h-8 rounded text-xs font-bold transition-colors ${
+              value === n
+                ? n >= 4 ? 'bg-green-500 text-white' : n === 3 ? 'bg-amber-500 text-white' : 'bg-red-500 text-white'
+                : 'bg-border text-muted hover:text-white'
+            }`}
+          >
+            {n}
+          </button>
+        ))}
+        {value != null && (
+          <button onClick={() => onChange(0)} className="w-8 h-8 rounded text-xs text-muted hover:text-white bg-border">✕</button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 const TIER_OPTIONS = ['HOT', 'WARM', 'COLD']
 const STATUS_OPTIONS = ['new', 'contacted', 'qualified', 'lost']
@@ -24,6 +50,23 @@ export default function LeadCardPage() {
   const { data: history } = useQuery({
     queryKey: ['lead-history', leadId],
     queryFn: () => leadsApi.history(leadId).then(r => r.data),
+  })
+
+  const { data: vacancies } = useQuery({
+    queryKey: ['lead-vacancies', leadId],
+    queryFn: () => leadsApi.vacancies(leadId).then(r => r.data),
+  })
+
+  const { data: dialogsData } = useQuery({
+    queryKey: ['lead-dialogs', leadId],
+    queryFn: () => dialogsApi.list({ lead_id: leadId, limit: 3 }).then(r => r.data),
+  })
+
+  const latestDialogId = dialogsData?.items?.[0]?.id
+  const { data: dialogDetail } = useQuery({
+    queryKey: ['dialog', latestDialogId],
+    queryFn: () => dialogsApi.get(latestDialogId!).then(r => r.data),
+    enabled: !!latestDialogId,
   })
 
   const patch = useMutation({
@@ -48,6 +91,7 @@ export default function LeadCardPage() {
 
   const [niche, setNiche] = useState('')
   const [source, setSource] = useState('')
+  const [qualNotes, setQualNotes] = useState('')
 
   if (isLoading) return (
     <div className="p-6 flex justify-center">
@@ -64,7 +108,18 @@ export default function LeadCardPage() {
         </Link>
         <div className="flex-1">
           <h1 className="text-xl font-semibold">{lead.full_name || `Lead #${lead.id}`}</h1>
-          {lead.username && <p className="text-sm text-muted">@{lead.username}</p>}
+          {lead.username && (
+            <div className="flex items-center gap-2">
+              <p className="text-sm text-muted">@{lead.username}</p>
+              <a
+                href={`tg://resolve?domain=${lead.username}`}
+                className="inline-flex items-center gap-1 text-xs text-accent hover:text-white transition-colors"
+                title="Открыть в Telegram"
+              >
+                <Send className="w-3 h-3" /> TG
+              </a>
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <button
@@ -178,6 +233,127 @@ export default function LeadCardPage() {
           </div>
         </div>
       </div>
+
+      {/* Original vacancy texts */}
+      {vacancies && vacancies.length > 0 && (
+        <div className="card mb-4 space-y-3">
+          <h2 className="font-medium text-sm text-muted uppercase tracking-wide flex items-center gap-2">
+            <FileText className="w-4 h-4" /> Оригинальные сообщения ({vacancies.length})
+          </h2>
+          <div className="space-y-3">
+            {vacancies.map((v: { id: number; text: string; source_channel: string; created_at: string; status: string }) => (
+              <div key={v.id} className="bg-surface rounded-lg p-3 text-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    {v.source_channel && (
+                      <span className="text-xs text-accent flex items-center gap-1">
+                        <ExternalLink className="w-3 h-3" />{v.source_channel}
+                      </span>
+                    )}
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      v.status === 'accepted' ? 'bg-green-500/20 text-green-400' : 'bg-border text-muted'
+                    }`}>{v.status}</span>
+                  </div>
+                  <span className="text-xs text-muted">{v.created_at?.slice(0, 16)}</span>
+                </div>
+                <p className="text-xs text-muted/90 whitespace-pre-wrap leading-relaxed">{v.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Qualification scoring */}
+      <div className="card mb-4 space-y-4">
+        <h2 className="font-medium text-sm text-muted uppercase tracking-wide">Оценка лида</h2>
+        <div className="grid grid-cols-2 gap-4">
+          <ScoreButtons
+            label="Насколько лид целевой (1-5)"
+            value={lead.qual_score}
+            onChange={v => patch.mutate({ qual_score: v === 0 ? null : v })}
+          />
+          <ScoreButtons
+            label="Насколько нам подходит (1-5)"
+            value={lead.fit_score}
+            onChange={v => patch.mutate({ fit_score: v === 0 ? null : v })}
+          />
+        </div>
+        <div>
+          <label className="text-xs text-muted mb-1 block">Заметки</label>
+          <textarea
+            className="input w-full text-xs min-h-[60px] resize-y"
+            placeholder={lead.qual_notes ?? 'Добавьте заметку по лиду...'}
+            value={qualNotes}
+            onChange={e => setQualNotes(e.target.value)}
+            onBlur={() => {
+              if (qualNotes !== '') {
+                patch.mutate({ qual_notes: qualNotes })
+                setQualNotes('')
+              }
+            }}
+          />
+          {lead.qual_notes && !qualNotes && (
+            <p className="text-xs text-muted mt-1 px-1">{lead.qual_notes}</p>
+          )}
+        </div>
+        {(lead.qual_score != null || lead.fit_score != null) && (
+          <div className="flex gap-3 text-xs">
+            {lead.qual_score != null && (
+              <span className={`px-2 py-0.5 rounded font-medium ${
+                lead.qual_score >= 4 ? 'bg-green-500/20 text-green-400' :
+                lead.qual_score === 3 ? 'bg-amber-500/20 text-amber-400' :
+                'bg-red-500/20 text-red-400'
+              }`}>
+                Целевой: {lead.qual_score}/5
+              </span>
+            )}
+            {lead.fit_score != null && (
+              <span className={`px-2 py-0.5 rounded font-medium ${
+                lead.fit_score >= 4 ? 'bg-green-500/20 text-green-400' :
+                lead.fit_score === 3 ? 'bg-amber-500/20 text-amber-400' :
+                'bg-red-500/20 text-red-400'
+              }`}>
+                Подходит: {lead.fit_score}/5
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Dialog history preview */}
+      {dialogDetail && dialogDetail.messages?.length > 0 && (
+        <div className="card mb-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-medium text-sm text-muted uppercase tracking-wide flex items-center gap-2">
+              <MessageSquare className="w-4 h-4" />
+              Последний диалог
+              <span className={`px-1.5 py-0.5 rounded text-xs ml-1 ${
+                dialogDetail.dialog?.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-border text-muted'
+              }`}>{dialogDetail.dialog?.status}</span>
+            </h2>
+            <Link to={`/dialogs/${latestDialogId}`} className="text-xs text-accent hover:text-white">
+              Открыть →
+            </Link>
+          </div>
+          <div className="space-y-2 max-h-56 overflow-auto">
+            {dialogDetail.messages.slice(-5).map((msg: { id: number; role: string; content: string; sent_at: string; is_manual: number }) => (
+              <div key={msg.id} className={`flex gap-2 text-xs ${msg.role === 'assistant' ? 'flex-row-reverse' : ''}`}>
+                <div className={`max-w-[80%] rounded-lg px-3 py-2 ${
+                  msg.role === 'assistant'
+                    ? 'bg-accent/20 text-white'
+                    : 'bg-surface text-white/80'
+                }`}>
+                  <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                  <p className="text-muted mt-1 text-[10px]">{msg.sent_at?.slice(11, 16)} {msg.is_manual ? '✏️' : '🤖'}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          {dialogsData && dialogsData.items?.length > 1 && (
+            <p className="text-xs text-muted">Всего диалогов: {dialogsData.items.length}</p>
+          )}
+        </div>
+      )}
 
       {/* Audit log */}
       <div className="card">

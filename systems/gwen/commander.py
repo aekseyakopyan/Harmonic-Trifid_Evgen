@@ -5,18 +5,71 @@ Gwen Commander - Интерфейс команд для Мамы системы 
 import asyncio
 import re
 import os
+import json
 import random
 import sqlite3
+from contextlib import contextmanager
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from pyrogram import Client, errors
 
 MSK = timezone(timedelta(hours=3))  # Moscow time (UTC+3)
+_STATE_FILE = None  # инициализируется в _load_system_state()
 
 
 def now_msk() -> datetime:
     """Current datetime in Moscow timezone."""
     return datetime.now(MSK)
+
+
+@contextmanager
+def vacancy_db(row_factory: bool = False):
+    """
+    Context manager для vacancies.db.
+    Гарантирует закрытие соединения даже при исключении.
+    """
+    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _persist_auto_outreach(value: bool):
+    """Сохраняет состояние AUTO_OUTREACH в файл чтобы пережить рестарт."""
+    global _STATE_FILE
+    if _STATE_FILE is None:
+        _STATE_FILE = settings.BASE_DIR / "data" / "system_state.json"
+    try:
+        state = {}
+        if _STATE_FILE.exists():
+            state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        state["AUTO_OUTREACH"] = value
+        state["AUTO_OUTREACH_changed_at"] = datetime.utcnow().isoformat()
+        _STATE_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        logger.info(f"💾 AUTO_OUTREACH={value} сохранён в system_state.json")
+    except Exception as e:
+        logger.error(f"Failed to persist AUTO_OUTREACH state: {e}")
+
+
+def _load_system_state():
+    """Загружает сохранённое состояние при старте системы."""
+    global _STATE_FILE
+    _STATE_FILE = settings.BASE_DIR / "data" / "system_state.json"
+    try:
+        if _STATE_FILE.exists():
+            state = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            if "AUTO_OUTREACH" in state:
+                settings.AUTO_OUTREACH = bool(state["AUTO_OUTREACH"])
+                logger.info(f"📂 Загружено состояние: AUTO_OUTREACH={settings.AUTO_OUTREACH}")
+    except Exception as e:
+        logger.warning(f"Could not load system_state.json: {e}")
 from sqlalchemy import select, func, distinct, or_
 from core.database.session import async_session
 from core.database.models import MessageLog, Lead
@@ -31,7 +84,7 @@ class GwenCommander:
     """
     Командный центр Гвен. Работает через SUPERVISOR_BOT_TOKEN.
     """
-    
+
     def __init__(self, main_client: Client, db_path: str = None):
         self.db_path = db_path or str(settings.VACANCY_DB_PATH)
         self.bot_token = settings.SUPERVISOR_BOT_TOKEN
@@ -44,6 +97,9 @@ class GwenCommander:
         self._chat_name_to_id = {} # Cache for metadata resolution
         self._blocked_ids: set = set()       # Кеш заблокированных user_id из TG
         self._blocked_cache_ts: float = 0.0  # Время последнего обновления кеша
+        self._auto_outreach_lock = asyncio.Lock()  # Защита от race condition при изменении AUTO_OUTREACH
+        # Загружаем сохранённое состояние (AUTO_OUTREACH и т.д.) при старте
+        _load_system_state()
         
     async def _refresh_blocked_cache(self) -> None:
         """Обновляет кеш заблокированных пользователей из Telegram (раз в час)."""
@@ -178,12 +234,10 @@ class GwenCommander:
                 # 0. Проверка: не ждет ли уже отправленный лид ответа от человека?
                 # Если AUTO_OUTREACH выключен, мы работаем в режиме "по одному лиду на подтверждение"
                 if not settings.AUTO_OUTREACH:
-                    # Используем одно соединение для проверки и возможных действий (избегаем race condition)
-                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM vacancies WHERE response = 'notified'")
-                    pending_count = cursor.fetchone()[0]
-                    conn.close()
+                    with vacancy_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT COUNT(*) FROM vacancies WHERE response = 'notified'")
+                        pending_count = cursor.fetchone()[0]
 
                     if pending_count > 0:
                         # Лид уже отправлен на подтверждение — ждём реакции пользователя.
@@ -192,17 +246,15 @@ class GwenCommander:
                         continue
 
                 # 2. Находим вакансии, о которых еще не уведомляли
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
-                    FROM vacancies 
-                    WHERE status = 'accepted' AND (response IS NULL OR response = "")
-                    ORDER BY last_seen ASC LIMIT 20
-                """)
-                new_vacancies = cursor.fetchall()
-                conn.close()
+                with vacancy_db(row_factory=True) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
+                        FROM vacancies
+                        WHERE status = 'accepted' AND (response IS NULL OR response = '')
+                        ORDER BY priority DESC, last_seen ASC LIMIT 20
+                    """)
+                    new_vacancies = cursor.fetchall()
                 
                 for v in new_vacancies:
                     v_dict = dict(v)
@@ -234,11 +286,9 @@ class GwenCommander:
                                         v_contact = user.username if user.username else str(user.id)
                                         logger.info(f"✨ Контакт восстановлен! {v_contact}")
                                         # Сохраняем для будущего
-                                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                        cursor = conn.cursor()
-                                        cursor.execute("UPDATE vacancies SET contact_link = ?, chat_id = ? WHERE hash = ?", (v_contact, chat_id if isinstance(chat_id, int) else None, v_hash))
-                                        conn.commit()
-                                        conn.close()
+                                        with vacancy_db() as conn:
+                                            conn.execute("UPDATE vacancies SET contact_link = ?, chat_id = ? WHERE hash = ?",
+                                                         (v_contact, chat_id if isinstance(chat_id, int) else None, v_hash))
                                     else:
                                         raise Exception("Message or user not found")
                                 except Exception as e:
@@ -250,19 +300,10 @@ class GwenCommander:
 
                     if not v_contact:
                         logger.info(f"⏭ Пропуск лида без контакта: {v_hash[:8]}...")
-                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
-                        conn.commit()
-                        conn.close()
-                        # Не спамим уведомлениями если их много (только для горячих)
-                        if v_priority > 0:
-                            try:
-                                _dir = v_dict.get('direction') or '—'
-                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
-                                await supervisor_notifier.send_error(f"⚠️ нет контакта | {_dir} | {_req}")
-                            except Exception:
-                                pass
+                        with vacancy_db() as conn:
+                            conn.execute("UPDATE vacancies SET response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
+                        # Лог в файл (без Telegram-уведомления — не критично)
+                        logger.info(f"⚠️ нет контакта | priority={v_priority}")
                         await asyncio.sleep(2) # Короткая пауза для пропуска
                         continue
 
@@ -274,27 +315,18 @@ class GwenCommander:
                                 v_dict.get('text', ''), v_dict.get('direction', 'Digital Marketing')
                             )
                             if v_draft:
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
-                                conn.commit()
-                                conn.close()
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
                                 logger.info(f"✅ Черновик сгенерирован для {v_hash[:8]}")
                             else:
                                 logger.info(f"⏭ Не удалось сгенерировать черновик: {v_hash[:8]}")
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
-                                conn.commit()
-                                conn.close()
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
                                 continue
                         except Exception as draft_err:
                             logger.error(f"Draft generation failed for {v_hash[:8]}: {draft_err}")
-                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                            cursor = conn.cursor()
-                            cursor.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
-                            conn.commit()
-                            conn.close()
+                            with vacancy_db() as conn:
+                                conn.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
                             continue
 
                     # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00)
@@ -310,13 +342,11 @@ class GwenCommander:
                             # ПРОВЕРКА ЧС (заблокированные в TG)
                             if await self._is_tg_blocked(target):
                                 logger.info(f"🚫 ЧС: {v_contact} — пропускаем")
-                                conn = sqlite3.connect(self.db_path, timeout=30)
-                                conn.execute("UPDATE vacancies SET response = 'blacklist_skip' WHERE hash = ?", (v_hash,))
-                                conn.commit()
-                                conn.close()
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'blacklist_skip' WHERE hash = ?", (v_hash,))
                                 continue
 
-                            # ПРОВЕРКА: не в активном диалоге и не контактировали недавно
+                            # ПРОВЕРКА НА ДУБЛИКАТЫ В ЧАТЕ (Схожесть с прошлыми откликами)
                             is_duplicate = False
                             try:
                                 async with async_session() as session:
@@ -324,55 +354,37 @@ class GwenCommander:
                                     entity_id = entity.id if entity else None
                                     if not entity_id:
                                         raise Exception(f"User not found: {target}")
-
-                                    # Ищем лид и его историю сообщений (все направления)
+                                    
+                                    # Ищем лид и его историю сообщений
                                     stmt = select(Lead).where(Lead.telegram_id == entity_id)
                                     res = await session.execute(stmt)
                                     lead = res.scalars().first()
-
+                                    
                                     if lead:
+                                        # Берем последние 10 исходящих сообщений с типом outreach
                                         stmt_msgs = select(MessageLog).where(
                                             MessageLog.lead_id == lead.id,
-                                        ).order_by(MessageLog.created_at.desc()).limit(20)
+                                            MessageLog.direction == "outgoing",
+                                            MessageLog.intent == "outreach"
+                                        ).order_by(MessageLog.created_at.desc()).limit(10)
                                         res_msgs = await session.execute(stmt_msgs)
-                                        all_messages = res_msgs.scalars().all()
-
-                                        if all_messages:
-                                            # Если человек уже ответил — активный диалог, не спамим
-                                            has_replied = any(m.direction == "incoming" for m in all_messages)
-                                            if has_replied:
-                                                logger.info(f"⏭ Пропуск активного диалога: {target} уже отвечал нам")
-                                                is_duplicate = True
-                                            else:
-                                                # Если контактировали менее 14 дней назад — пропускаем
-                                                last_out = next((m for m in all_messages if m.direction == "outgoing"), None)
-                                                if last_out and last_out.created_at:
-                                                    days_since = (datetime.utcnow() - last_out.created_at).days
-                                                    if days_since < 14:
-                                                        logger.info(f"⏭ Пропуск: {target} уже получил отклик {days_since} дн. назад")
-                                                        is_duplicate = True
-
-                                                # Если черновик слишком похож на прошлые — тоже пропускаем
-                                                if not is_duplicate:
-                                                    past_outreach = [m for m in all_messages if m.direction == "outgoing" and m.intent == "outreach"]
-                                                    if past_outreach:
-                                                        detector = get_duplicate_detector()
-                                                        for past_msg in past_outreach:
-                                                            similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
-                                                            if similarity > 0.85:
-                                                                logger.info(f"⏭ Пропуск дубликата: отклик для {target} похож на предыдущий (sim={similarity:.2f})")
-                                                                is_duplicate = True
-                                                                break
+                                        past_messages = res_msgs.scalars().all()
+                                        
+                                        if past_messages:
+                                            detector = get_duplicate_detector()
+                                            for past_msg in past_messages:
+                                                similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
+                                                if similarity > 0.85:
+                                                    logger.info(f"⏭ Пропуск дубликата: Отклик в {target} слишком похож на предыдущий (sim={similarity:.2f})")
+                                                    is_duplicate = True
+                                                    break
                             except Exception as check_err:
                                 logger.error(f"Error during duplicate outreach check: {check_err}")
 
                             if is_duplicate:
                                 # Помечаем как пропущенный дубликат
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE vacancies SET response = 'skipped_duplicate' WHERE hash = ?", (v_hash,))
-                                conn.commit()
-                                conn.close()
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'skipped_duplicate' WHERE hash = ?", (v_hash,))
                                 await asyncio.sleep(2)
                                 continue
 
@@ -382,11 +394,8 @@ class GwenCommander:
                                 handover_manager.mark_as_automated(sent_msg.id)
 
                             # Успешная отправка
-                            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                            cursor = conn.cursor()
-                            cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
-                            conn.commit()
-                            conn.close()
+                            with vacancy_db() as conn:
+                                conn.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                             
                             # ЛОГИРОВАНИЕ В ОСНОВНУЮ БД (для Дашборда)
                             try:
@@ -440,13 +449,6 @@ class GwenCommander:
                                 logger.error(f"Failed to log auto-outreach to bot_data.db: {db_err}")
 
                             logger.info(f"✅ Авто-отклик отправлен: {v_contact}")
-                            try:
-                                _login = v_contact.split('/')[-1].replace('@', '').strip()
-                                _dir = v_dict.get('direction') or '—'
-                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
-                                await supervisor_notifier.send_error(f"✅ @{_login} | {_dir} | {_req}")
-                            except Exception:
-                                pass
                             
                             # УСПЕШНАЯ ОТПРАВКА -> ДЛИННАЯ ПАУЗА (спам-защита)
                             pause_time = random.randint(65, 85)
@@ -455,9 +457,21 @@ class GwenCommander:
 
                         except errors.FloodWait as e:
                             logger.warning(f"⏳ FloodWait: нужно подождать {e.value} сек.")
-                            if e.value > 180: # Если ждать больше 3 минут
+                            # Помечаем лид как flood_paused чтобы не потерять при рестарте
+                            try:
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'flood_paused' WHERE hash = ?", (v_hash,))
+                            except Exception as db_e:
+                                logger.error(f"Failed to mark flood_paused: {db_e}")
+                            if e.value > 180:
                                 await supervisor_notifier.send_error(f"⏳ Гвен взяла паузу. Telegram просит подождать {e.value} секунд.")
                             await asyncio.sleep(e.value)
+                            # После паузы возвращаем лид в очередь
+                            try:
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = NULL WHERE hash = ? AND response = 'flood_paused'", (v_hash,))
+                            except Exception:
+                                pass
                             continue
 
                         except errors.PeerFlood as e:
@@ -486,7 +500,8 @@ class GwenCommander:
                                 is_limited = False
                             
                             if is_limited:
-                                settings.AUTO_OUTREACH = False # Выключаем автомат
+                                settings.AUTO_OUTREACH = False  # Выключаем автомат
+                                _persist_auto_outreach(False)   # Сохраняем — переживёт рестарт
                                 await supervisor_notifier.send_error(
                                     "🚨 <b>ВНИМАНИЕ: СПАМ-БЛОК ПОДТВЕРЖДЕН!</b>\n\n"
                                     f"Статус от @SpamBot:\n<i>{status_report}</i>\n\n"
@@ -494,41 +509,24 @@ class GwenCommander:
                                 )
                                 return # Выходим из цикла
                             else:
-                                # Ограничений нет, значит это просто приватность пользователя или невалидный ID
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE vacancies SET response = 'failed_privacy' WHERE hash = ?", (v_hash,))
-                                conn.commit()
-                                conn.close()
+                                # Ограничений нет, просто приватность пользователя или невалидный ID
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'failed_privacy' WHERE hash = ?", (v_hash,))
                                 continue
 
                         except Exception as e:
                             logger.error(f"Auto-outreach failed for {v_contact}: {e}")
-                            # Помечаем лид как failed чтобы не зациклиться
                             try:
-                                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                                cursor = conn.cursor()
-                                cursor.execute("UPDATE vacancies SET response = 'failed' WHERE hash = ?", (v_hash,))
-                                conn.commit()
-                                conn.close()
+                                with vacancy_db() as conn:
+                                    conn.execute("UPDATE vacancies SET response = 'failed' WHERE hash = ?", (v_hash,))
                             except Exception as db_err:
                                 logger.error(f"Failed to mark lead as failed: {db_err}")
-                            try:
-                                _login = v_contact.split('/')[-1].replace('@', '').strip()
-                                _dir = v_dict.get('direction') or '—'
-                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
-                                await supervisor_notifier.send_error(f"❌ @{_login} | {_dir} | {_req} | {str(e)[:80]}")
-                            except Exception:
-                                pass
                         # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
 
                         # Помечаем как "уведомлен"
-                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
-                        conn.commit()
-                        conn.close()
+                        with vacancy_db() as conn:
+                            conn.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
                         await asyncio.sleep(2)
                     
             except Exception as e:
@@ -549,13 +547,11 @@ class GwenCommander:
                     report = await gwen_learning_engine.run_learning_session()
                     
                     if report.get("status") == "success":
-                        msg = (
-                            "🧠 <b>Гвен обновила свои фильтры!</b>\n\n"
-                            f"✅ Добавлено позитивов: {', '.join(report['added_positive']) if report['added_positive'] else '0'}\n"
-                            f"❌ Добавлено негативов: {', '.join(report['added_negative']) if report['added_negative'] else '0'}\n\n"
-                            f"📝 <b>Обоснование:</b>\n<i>{report['reason']}</i>"
+                        # Только в лог — не критично для уведомления
+                        logger.info(
+                            f"🧠 Гвен обновила фильтры: "
+                            f"+{report.get('added_positive', [])} / -{report.get('added_negative', [])}"
                         )
-                        await supervisor_notifier.send_error(msg)
                     
                     # Ждем до следующего часа, чтобы не спамить обучением в течении этого получаса
                     await asyncio.sleep(3600)
@@ -694,23 +690,17 @@ class GwenCommander:
         # 0. Проверка: ждем ли мы комментарий к лиду?
         if event.sender_id in self.waiting_for_reason:
             v_hash = self.waiting_for_reason.pop(event.sender_id)
-            import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            
-            # Получаем текст вакансии для анализа
-            cursor.execute("SELECT text FROM vacancies WHERE hash = ?", (v_hash,))
-            v_row = cursor.fetchone()
-            v_text = v_row[0] if v_row else ""
-            
-            # Обучение Гвен на основе фидбека
-            from systems.gwen.learning_engine import gwen_learning_engine
-            learning_report = await gwen_learning_engine.analyze_spam_with_feedback(v_text, text)
-            
-            # Обновляем причину и помечаем как обработанное, чтобы разблокировать очередь
-            cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ?, response = 'rejected' WHERE hash = ?", (f"USER_REJECT: {text}", v_hash))
-            conn.commit()
-            conn.close()
+            with vacancy_db(row_factory=True) as conn:
+                cursor = conn.cursor()
+                # Получаем текст вакансии для анализа
+                cursor.execute("SELECT text FROM vacancies WHERE hash = ?", (v_hash,))
+                v_row = cursor.fetchone()
+                v_text = v_row[0] if v_row else ""
+                # Обучение Гвен на основе фидбека
+                from systems.gwen.learning_engine import gwen_learning_engine
+                learning_report = await gwen_learning_engine.analyze_spam_with_feedback(v_text, text)
+                # Обновляем причину и помечаем как обработанное, чтобы разблокировать очередь
+                cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ?, response = 'rejected' WHERE hash = ?", (f"USER_REJECT: {text}", v_hash))
 
             # --- ЭТАП 2: РЕВАЛИДАЦИЯ ОЧЕРЕДИ ---
             # После того как Гвен выучила новые стоп-слова, нужно пройтись по ожидающим лидам
@@ -865,16 +855,12 @@ class GwenCommander:
                 msg_today = await session.scalar(select(func.count(MessageLog.id)).where(MessageLog.created_at > today))
             
             # 2. Статистика по парсеру (SQLite)
-            import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            cursor.execute("SELECT status, COUNT(*) FROM vacancies GROUP BY status")
-            v_stats = dict(cursor.fetchall())
-            
-            # Проверяем кол-во черновиков
-            cursor.execute("SELECT COUNT(*) FROM vacancies WHERE draft_response IS NOT NULL AND response IS NULL")
-            new_drafts = cursor.fetchone()[0]
-            conn.close()
+            with vacancy_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT status, COUNT(*) FROM vacancies GROUP BY status")
+                v_stats = dict(cursor.fetchall())
+                cursor.execute("SELECT COUNT(*) FROM vacancies WHERE draft_response IS NOT NULL AND response IS NULL")
+                new_drafts = cursor.fetchone()[0]
             
             stats_text = (
                 f"📊 <b>Статистика системы:</b>\n\n"
@@ -952,20 +938,15 @@ class GwenCommander:
             # Анализ причины спама (ЛОКАЛЬНО)
             from systems.gwen.learning_engine import gwen_learning_engine
             # Пытаемся найти текст сообщения в базе для анализа
-            import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            cursor.execute("SELECT text FROM vacancies WHERE contact_link LIKE ? ORDER BY last_seen DESC LIMIT 1", (f'%{target}%',))
-            row = cursor.fetchone()
-            
-            reason = "Ручная блокировка"
-            if row:
-                reason = await gwen_learning_engine.analyze_spam_reason(row[0])
-
-            # Также помечаем в базе если есть такие вакансии
-            cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ? WHERE contact_link LIKE ?", (f"MANUAL_SPAM: {reason}", f'%{target}%'))
-            conn.commit()
-            conn.close()
+            with vacancy_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT text FROM vacancies WHERE contact_link LIKE ? ORDER BY last_seen DESC LIMIT 1", (f'%{target}%',))
+                row = cursor.fetchone()
+                reason = "Ручная блокировка"
+                if row:
+                    reason = await gwen_learning_engine.analyze_spam_reason(row[0])
+                # Также помечаем в базе если есть такие вакансии
+                cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ? WHERE contact_link LIKE ?", (f"MANUAL_SPAM: {reason}", f'%{target}%'))
             
             await event.respond(f"🚫 <b>{target}</b> отправлен в бан.\n🧐 <b>Анализ Гвен:</b> <i>{reason}</i>", parse_mode='html')
         except Exception as e:
@@ -993,74 +974,59 @@ class GwenCommander:
         v_hash = parts[2]
         
         if action in ["ignore", "block", "duplicate"]:
-            import sqlite3
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            
-            # Получаем данные вакансии
-            cursor.execute("SELECT text, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
-            row = cursor.fetchone()
-            
-            if not row:
-                await event.answer("❌ Вакансия не найдена", alert=True)
-                conn.close()
-                return
+            with vacancy_db(row_factory=True) as conn:
+                cursor = conn.cursor()
+                # Получаем данные вакансии
+                cursor.execute("SELECT text, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
+                row = cursor.fetchone()
 
-            v_text, v_contact_link = row
-            status_text = ""
-            rejection_reason = "MANUAL_REJECT"
+                if not row:
+                    await event.answer("❌ Вакансия не найдена", alert=True)
+                    return
 
-            if action == "block":
-                await event.answer("🚫 Пользователь заблокирован")
-                rejection_reason = "MANUAL_BLOCK"
-                status_text = "🚫 <b>Пользователь заблокирован.</b> Больше лидов от него не будет."
-                
-                # Блокируем в Телеграм (основной аккаунт)
-                if v_contact_link and v_contact_link != "Не найден":
-                    try:
-                        contact_part = v_contact_link.split('/')[-1].replace('@', '').strip()
-                        if contact_part:
-                            await self.main_client.block_user(contact_part)
-                            logger.info(f"🚫 Пользователь {contact_part} заблокирован")
-                        else:
-                            logger.warning(f"Could not extract username from {v_contact_link}")
-                    except Exception as e:
-                        logger.warning(f"Failed to block user: {e}")
+                v_text, v_contact_link = row
+                status_text = ""
+                rejection_reason = "MANUAL_REJECT"
 
-            elif action == "duplicate":
-                await event.answer("👯 Отмечено как дубль")
-                rejection_reason = "DUPLICATE"
-                status_text = "👯 <b>Отмечено как дубль.</b> Мы уже общались с этим заказчиком."
+                if action == "block":
+                    rejection_reason = "MANUAL_BLOCK"
+                    status_text = "🚫 <b>Пользователь заблокирован.</b> Больше лидов от него не будет."
+                elif action == "duplicate":
+                    rejection_reason = "DUPLICATE"
+                    status_text = "👯 <b>Отмечено как дубль.</b> Мы уже общались с этим заказчиком."
+                elif action == "ignore":
+                    self.waiting_for_reason[event.sender_id] = v_hash
+                    await event.answer("🗑 Напиши причину!")
+                    await event.edit("📩 <b>Помечено как СПАМ.</b>\n\n💬 Напиши кратко, <b>почему</b> этот лид не подходит? (Просто отправь текст следующим сообщением)", parse_mode='html')
+                    return
 
-            elif action == "ignore":
-                # Больше не анализируем автоматически ИИ
-                self.waiting_for_reason[event.sender_id] = v_hash
-                await event.answer("🗑 Напиши причину!")
-                await event.edit("📩 <b>Помечено как СПАМ.</b>\n\n💬 Напиши кратко, <b>почему</b> этот лид не подходит? (Просто отправь текст следующим сообщением)", parse_mode='html')
-                conn.close()
-                return
+                # Обновляем БД (для block/duplicate) - помечаем response как 'processed', чтобы очередь шла дальше
+                cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ?, response = 'processed' WHERE hash = ?", (rejection_reason, v_hash))
 
-            # Обновляем БД (для block/duplicate) - помечаем response как 'processed', чтобы очередь шла дальше
-            cursor.execute("UPDATE vacancies SET status = 'rejected', rejection_reason = ?, response = 'processed' WHERE hash = ?", (rejection_reason, v_hash))
-            conn.commit()
-            conn.close()
+            # Блокируем в Телеграм (основной аккаунт) — после закрытия БД
+            if action == "block" and v_contact_link and v_contact_link != "Не найден":
+                try:
+                    contact_part = v_contact_link.split('/')[-1].replace('@', '').strip()
+                    if contact_part:
+                        await self.main_client.block_user(contact_part)
+                        logger.info(f"🚫 Пользователь {contact_part} заблокирован")
+                except Exception as e:
+                    logger.warning(f"Failed to block user: {e}")
 
+            await event.answer("✅")
             await event.edit(status_text, parse_mode='html')
             return
 
         # Для Send и Edit нужна информация из БД
-        import sqlite3
         try:
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            cursor.execute("SELECT text, draft_response, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
-            vacancy = cursor.fetchone()
+            with vacancy_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT text, draft_response, contact_link FROM vacancies WHERE hash = ?", (v_hash,))
+                vacancy = cursor.fetchone()
         except Exception as e:
             logger.error(f"DB Error in callback: {e}")
             await event.answer("❌ Ошибка базы данных", alert=True)
             return
-        finally:
-             if 'conn' in locals(): conn.close()
         
         if not vacancy:
             await event.answer("❌ Вакансия не найдена в базе", alert=True)
@@ -1086,12 +1052,8 @@ class GwenCommander:
             # Если контактов нет совсем - выходим СРАЗУ, не тратим время на AI
             if not v_contact or v_contact == "Не найден":
                 await event.answer("⚠️ Контакт не найден.", alert=True)
-                # Помечаем как accepted, но без отправки
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                cursor = conn.cursor()
-                cursor.execute("UPDATE vacancies SET status = 'accepted', response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
-                conn.commit()
-                conn.close()
+                with vacancy_db() as conn:
+                    conn.execute("UPDATE vacancies SET status = 'accepted', response = 'no_contact_skip' WHERE hash = ?", (v_hash,))
                 await event.edit(f"✅ <b>Одобрено (без отправки)</b>\n\nЯ запомнила твой выбор, но отправить отклик некуда (нет контакта).", parse_mode='html')
                 return
 
@@ -1132,11 +1094,8 @@ class GwenCommander:
                         return
                     
                     # Сохраняем черновик
-                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
-                    conn.commit()
-                    conn.close()
+                    with vacancy_db() as conn:
+                        conn.execute("UPDATE vacancies SET draft_response = ? WHERE hash = ?", (v_draft, v_hash))
 
                 # Определяем получателя (username или ID)
                 destination = None
@@ -1164,11 +1123,8 @@ class GwenCommander:
                 await event.edit(f"✅ <b>Отправлено в {v_contact}</b>\n🧐 <b>Анализ Гвен:</b> {analysis_reason}\n\n{v_draft}", parse_mode='html')
                 
                 # Помечаем в базе как отправленное
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                cursor = conn.cursor()
-                cursor.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
-                conn.commit()
-                conn.close()
+                with vacancy_db() as conn:
+                    conn.execute("UPDATE vacancies SET response = ? WHERE hash = ?", (v_draft, v_hash))
                 
             except Exception as e:
                 logger.error(f"Failed to send outreach via userbot: {e}")
@@ -1190,57 +1146,53 @@ class GwenCommander:
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
             # --- vacancies.db ---
-            conn_v = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cur = conn_v.cursor()
-
-            cur.execute("SELECT COUNT(*) FROM vacancies WHERE status='accepted' AND last_seen >= ?", (since,))
-            accepted_24h = (cur.fetchone() or [0])[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM vacancies
-                WHERE status='accepted'
-                  AND response IS NOT NULL AND response != ''
-                  AND response NOT IN ('no_contact_skip','no_draft_skip','notified','failed','failed_privacy','skipped_duplicate')
-                  AND last_seen >= ?
-            """, (since,))
-            sent_24h = (cur.fetchone() or [0])[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM vacancies
-                WHERE status='accepted'
-                  AND draft_response IS NOT NULL AND draft_response != ''
-                  AND (response IS NULL OR response = '')
-            """)
-            pending_drafts = (cur.fetchone() or [0])[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM vacancies
-                WHERE status='accepted'
-                  AND response = 'no_contact_skip'
-            """)
-            no_contact = (cur.fetchone() or [0])[0]
-
-            cur.execute("""
-                SELECT direction, text, contact_link
-                FROM vacancies
-                WHERE status='accepted'
-                  AND (response IS NULL OR response = '')
-                ORDER BY priority DESC, last_seen DESC
-                LIMIT 5
-            """)
-            top_orders = cur.fetchall()
-            conn_v.close()
+            with vacancy_db() as conn_v:
+                cur = conn_v.cursor()
+                cur.execute("SELECT COUNT(*) FROM vacancies WHERE status='accepted' AND last_seen >= ?", (since,))
+                accepted_24h = (cur.fetchone() or [0])[0]
+                cur.execute("""
+                    SELECT COUNT(*) FROM vacancies
+                    WHERE status='accepted'
+                      AND response IS NOT NULL AND response != ''
+                      AND response NOT IN ('no_contact_skip','no_draft_skip','notified','failed','failed_privacy','skipped_duplicate')
+                      AND last_seen >= ?
+                """, (since,))
+                sent_24h = (cur.fetchone() or [0])[0]
+                cur.execute("""
+                    SELECT COUNT(*) FROM vacancies
+                    WHERE status='accepted'
+                      AND draft_response IS NOT NULL AND draft_response != ''
+                      AND (response IS NULL OR response = '')
+                """)
+                pending_drafts = (cur.fetchone() or [0])[0]
+                cur.execute("""
+                    SELECT COUNT(*) FROM vacancies
+                    WHERE status='accepted'
+                      AND response = 'no_contact_skip'
+                """)
+                no_contact = (cur.fetchone() or [0])[0]
+                cur.execute("""
+                    SELECT direction, text, contact_link
+                    FROM vacancies
+                    WHERE status='accepted'
+                      AND (response IS NULL OR response = '')
+                    ORDER BY priority DESC, last_seen DESC
+                    LIMIT 5
+                """)
+                top_orders = cur.fetchall()
 
             # --- bot_data.db ---
             try:
                 conn_b = sqlite3.connect(str(settings.DATABASE_PATH), timeout=10)
-                cur_b = conn_b.cursor()
-                cur_b.execute(
-                    "SELECT COUNT(*) FROM message_logs WHERE direction='incoming' AND created_at >= ?",
-                    (since,)
-                )
-                incoming_msgs = (cur_b.fetchone() or [0])[0]
-                conn_b.close()
+                try:
+                    cur_b = conn_b.cursor()
+                    cur_b.execute(
+                        "SELECT COUNT(*) FROM message_logs WHERE direction='incoming' AND created_at >= ?",
+                        (since,)
+                    )
+                    incoming_msgs = (cur_b.fetchone() or [0])[0]
+                finally:
+                    conn_b.close()
             except Exception:
                 incoming_msgs = "—"
 
@@ -1304,42 +1256,45 @@ class GwenCommander:
                     await asyncio.sleep(1800)
                     continue
 
+                def _hdb():
+                    return sqlite3.connect(HISTORY_DB, timeout=30)
+
                 # Идемпотентно добавляем колонку
-                conn = sqlite3.connect(HISTORY_DB, timeout=30)
-                try:
-                    conn.execute("ALTER TABLE history_leads ADD COLUMN outreach_sent_at TEXT")
-                    conn.commit()
-                except Exception:
-                    pass
+                with _hdb() as conn:
+                    try:
+                        conn.execute("ALTER TABLE history_leads ADD COLUMN outreach_sent_at TEXT")
+                    except Exception:
+                        pass
 
                 # Считаем отправленные сегодня
                 today = now.strftime('%Y-%m-%d')
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM history_leads WHERE outreach_sent_at LIKE ?",
-                    (f"{today}%",)
-                ).fetchone()
-                sent_today = row[0] if row else 0
+                with _hdb() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) FROM history_leads WHERE outreach_sent_at LIKE ?",
+                        (f"{today}%",)
+                    ).fetchone()
+                    sent_today = row[0] if row else 0
 
                 if sent_today >= MAX_PER_DAY:
-                    conn.close()
                     await asyncio.sleep(3600)
                     continue
 
-                leads = conn.execute("""
-                    SELECT id, text, direction, contact_link, source, date
-                    FROM history_leads
-                    WHERE contact_link IS NOT NULL AND contact_link != ''
-                      AND outreach_sent_at IS NULL
-                      AND score >= 3
-                    ORDER BY score DESC, found_at DESC
-                    LIMIT 3
-                """).fetchall()
-                conn.close()
+                with _hdb() as conn:
+                    leads = conn.execute("""
+                        SELECT id, text, direction, contact_link, source, date
+                        FROM history_leads
+                        WHERE contact_link IS NOT NULL AND contact_link != ''
+                          AND outreach_sent_at IS NULL
+                          AND score >= 3
+                        ORDER BY score DESC, found_at DESC
+                        LIMIT 3
+                    """).fetchall()
 
                 if not leads:
                     await asyncio.sleep(7200)
                     continue
 
+                import re as _re
                 for lead in leads:
                     lead_id, text, direction, contact_link, source, lead_date = lead
                     direction = direction or "маркетинг / digital"
@@ -1350,7 +1305,6 @@ class GwenCommander:
                     target = contact_link.split('/')[-1].replace('@', '').strip()
 
                     # Пропускаем невалидные контакты (не TG username/id)
-                    import re as _re
                     _is_tg = (
                         contact_link.startswith('https://t.me/') or
                         contact_link.startswith('@') or
@@ -1358,43 +1312,27 @@ class GwenCommander:
                     ) and _re.match(r'^[a-zA-Z][a-zA-Z0-9_]{3,31}$', target)
                     if not _is_tg:
                         logger.info(f"⏭ Пропуск невалидного контакта: {contact_link}")
-                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
-                        conn.execute("UPDATE history_leads SET outreach_sent_at = 'invalid_contact' WHERE id = ?", (lead_id,))
-                        conn.commit()
-                        conn.close()
+                        with _hdb() as conn:
+                            conn.execute("UPDATE history_leads SET outreach_sent_at = 'invalid_contact' WHERE id = ?", (lead_id,))
                         continue
 
                     # ПРОВЕРКА ЧС
                     if await self._is_tg_blocked(target):
                         logger.info(f"🚫 ЧС (history): {contact_link} — пропускаем")
-                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
-                        conn.execute(
-                            "UPDATE history_leads SET outreach_sent_at = 'blacklist_skip' WHERE id = ?",
-                            (lead_id,)
-                        )
-                        conn.commit()
-                        conn.close()
+                        with _hdb() as conn:
+                            conn.execute("UPDATE history_leads SET outreach_sent_at = 'blacklist_skip' WHERE id = ?", (lead_id,))
                         continue
 
                     try:
                         sent_msg = await self.main_client.send_message(target, draft)
                         if sent_msg:
                             handover_manager.mark_as_automated(sent_msg.id)
-                        conn = sqlite3.connect(HISTORY_DB, timeout=30)
-                        conn.execute(
-                            "UPDATE history_leads SET outreach_sent_at = ? WHERE id = ?",
-                            (now_msk().isoformat(), lead_id)
-                        )
-                        conn.commit()
-                        conn.close()
+                        with _hdb() as conn:
+                            conn.execute(
+                                "UPDATE history_leads SET outreach_sent_at = ? WHERE id = ?",
+                                (now_msk().isoformat(), lead_id)
+                            )
                         logger.info(f"✅ History outreach → {contact_link}")
-                        try:
-                            _login = contact_link.split('/')[-1].replace('@', '').strip()
-                            _dir = direction or '—'
-                            _req = (text or '').replace('\n', ' ')[:120]
-                            await supervisor_notifier.send_error(f"📬 @{_login} | {_dir} | {_req}")
-                        except Exception:
-                            pass
                     except Exception as e:
                         logger.error(f"History outreach failed → {contact_link}: {e}")
 
@@ -1454,17 +1392,16 @@ class GwenCommander:
         from core.ai_engine.llm_client import llm_client
 
         try:
-            conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT hash, text, direction, source
-                FROM vacancies
-                WHERE status = 'accepted'
-                  AND DATE(last_seen) >= DATE('now', '-7 days')
-                ORDER BY last_seen DESC
-            """)
-            rows = cursor.fetchall()
-            conn.close()
+            with vacancy_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT hash, text, direction, source
+                    FROM vacancies
+                    WHERE status = 'accepted'
+                      AND DATE(last_seen) >= DATE('now', '-7 days')
+                    ORDER BY last_seen DESC
+                """)
+                rows = cursor.fetchall()
         except Exception as e:
             logger.error(f"_analyze_lead_quality: DB error: {e}")
             return

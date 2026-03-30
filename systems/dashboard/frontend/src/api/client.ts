@@ -12,6 +12,9 @@ export const leadsApi = {
   reprocess: (id: number) => api.post(`/leads/${id}/reprocess`),
   archive: (id: number) => api.post(`/leads/${id}/archive`),
   history: (id: number) => api.get(`/leads/${id}/history`),
+  vacancies: (id: number) => api.get(`/leads/${id}/vacancies`),
+  bulk: (lead_ids: number[], action: string, value = '') =>
+    api.post('/leads/bulk', lead_ids, { params: { action, value } }),
   export: (params?: Record<string, unknown>) =>
     api.post('/leads/export', {}, { params, responseType: 'blob' }),
 }
@@ -58,4 +61,9 @@ export const analyticsApi = {
   byNiche: () => api.get('/analytics/by_niche'),
   bySource: () => api.get('/analytics/by_source'),
   alexeyLoad: () => api.get('/analytics/alexey_load'),
+  funnel: () => api.get('/analytics/funnel'),
+  qualDistribution: () => api.get('/analytics/qual_distribution'),
+  qualTrend: (period = 'week') => api.get('/analytics/qual_trend', { params: { period } }),
+  filterStats: () => api.get('/analytics/filter_stats'),
+  home: () => api.get('/analytics/home'),
 }

@@ -14,6 +14,9 @@ export interface Lead {
   last_interaction: string | null
   created_at: string | null
   updated_at: string | null
+  qual_score: number | null
+  fit_score: number | null
+  qual_notes: string | null
 }
 
 export interface Dialog {

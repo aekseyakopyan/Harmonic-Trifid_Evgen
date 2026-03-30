@@ -3,7 +3,7 @@ FastAPI backend для Telegram Mini App + Web Dashboard.
 Предоставляет API для мониторинга системы, управления лидами и RL статистикой.
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
@@ -14,6 +14,8 @@ import asyncio
 import subprocess
 import os
 import re
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 import sys
 from pathlib import Path
@@ -32,6 +34,68 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────
+# Simple in-memory rate limiter
+# ─────────────────────────────────────────────
+_rate_buckets: dict = defaultdict(list)  # ip -> [timestamps]
+_RATE_LIMIT = 60      # запросов
+_RATE_WINDOW = 60     # за N секунд
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    # Пропускаем статику и healthcheck
+    if request.url.path.startswith("/static") or request.url.path == "/health":
+        return await call_next(request)
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    window_start = now - _RATE_WINDOW
+    # Очищаем старые записи
+    _rate_buckets[ip] = [t for t in _rate_buckets[ip] if t > window_start]
+    if len(_rate_buckets[ip]) >= _RATE_LIMIT:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=429, content={"detail": "Too many requests. Limit: 60/min."})
+    _rate_buckets[ip].append(now)
+    return await call_next(request)
+
+# ─────────────────────────────────────────────
+# Auto-migration: ensure new columns exist
+# ─────────────────────────────────────────────
+
+async def _ensure_columns():
+    """Add rating and user_status columns + performance indexes if they don't exist."""
+    db_path = str(settings.VACANCY_DB_PATH)
+    async with aiosqlite.connect(db_path) as db:
+        # Новые колонки
+        cursor = await db.execute("PRAGMA table_info(vacancies)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "rating" not in columns:
+            await db.execute("ALTER TABLE vacancies ADD COLUMN rating INTEGER DEFAULT 0")
+        if "user_status" not in columns:
+            await db.execute("ALTER TABLE vacancies ADD COLUMN user_status TEXT DEFAULT 'new'")
+
+        # Индексы для быстрых выборок (особенно при 100k+ вакансий)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vac_status_response "
+            "ON vacancies(status, response)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vac_contact_link "
+            "ON vacancies(contact_link)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vac_last_seen "
+            "ON vacancies(last_seen DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vac_direction "
+            "ON vacancies(direction)"
+        )
+        await db.commit()
+
+@app.on_event("startup")
+async def startup_event():
+    await _ensure_columns()
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 LOG_FILES = {
@@ -56,6 +120,12 @@ class FeedbackRequest(BaseModel):
     client_replied: bool
     reply_time_seconds: Optional[int] = None
 
+class StatusUpdateRequest(BaseModel):
+    status: str  # new, in_progress, sent, won, lost
+
+class RatingUpdateRequest(BaseModel):
+    rating: int  # 1-5
+
 # ─────────────────────────────────────────────
 # SYSTEM STATUS
 # ─────────────────────────────────────────────
@@ -66,8 +136,8 @@ async def get_system_status():
     services = {
         "alexey":   {"pattern": "systems/alexey/main.py",    "label": "Alexey Outreach"},
         "parser":   {"pattern": "main.py parse today",       "label": "Today Parser"},
-        "gwen":     {"pattern": "systems/gwen/bot.py",       "label": "Gwen Supervisor"},
         "joiner":   {"pattern": "apps/chat_joiner.py",       "label": "Chat Joiner"},
+        "gwen":     {"pattern": "systems/gwen/bot.py",       "label": "Gwen Supervisor"},
         "miniapp":  {"pattern": "systems/miniapp/api.py",    "label": "Mini App API"},
         "dashboard":{"pattern": "systems/dashboard/main.py", "label": "Dashboard"},
     }
@@ -185,7 +255,7 @@ async def get_queue(limit: int = Query(50, le=200)):
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
             SELECT id, hash, direction, contact_link, text, draft_response,
-                   response, last_seen, tier, priority
+                   response, last_seen, tier
             FROM vacancies
             WHERE status='accepted' AND (response IS NULL OR response = '')
             ORDER BY last_seen DESC
@@ -206,7 +276,6 @@ async def get_queue(limit: int = Query(50, le=200)):
             "response": r["response"],
             "last_seen": r["last_seen"],
             "tier": r["tier"],
-            "priority": r["priority"],
         })
     return {"leads": leads, "total": len(leads)}
 
@@ -218,19 +287,29 @@ async def get_queue(limit: int = Query(50, le=200)):
 async def get_accepted_leads(
     limit: int = Query(100, le=1000),
     offset: int = 0,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    user_status: Optional[str] = None,
+    direction: Optional[str] = None,
 ):
-    """Все квалифицированные лиды (status='accepted')."""
+    """Все квалифицированные лиды (status='accepted') с фильтрами."""
     db_path = settings.VACANCY_DB_PATH
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
+        # Base condition: status='accepted' AND (has response OR user_status is not 'new')
+        base_where = "status='accepted' AND ((response IS NOT NULL AND response != '') OR user_status != 'new')"
         
-        query = "SELECT id, hash, direction, contact_link, text, response, last_seen, tier, priority FROM vacancies WHERE status='accepted'"
+        query = f"SELECT id, hash, direction, contact_link, text, response, last_seen, tier, rating, user_status FROM vacancies WHERE {base_where}"
         params = []
         
         if search:
             query += " AND (text LIKE ? OR direction LIKE ?)"
             params.extend([f"%{search}%", f"%{search}%"])
+        if user_status and user_status != 'all':
+            query += " AND user_status = ?"
+            params.append(user_status)
+        if direction and direction != 'all':
+            query += " AND direction LIKE ?"
+            params.append(f"%{direction}%")
             
         query += " ORDER BY last_seen DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -239,14 +318,26 @@ async def get_accepted_leads(
         rows = await cursor.fetchall()
         
         # Count total for pagination
-        count_query = "SELECT COUNT(*) FROM vacancies WHERE status='accepted'"
+        count_query = f"SELECT COUNT(*) FROM vacancies WHERE {base_where}"
         count_params = []
         if search:
             count_query += " AND (text LIKE ? OR direction LIKE ?)"
             count_params.extend([f"%{search}%", f"%{search}%"])
+        if user_status and user_status != 'all':
+            count_query += " AND user_status = ?"
+            count_params.append(user_status)
+        if direction and direction != 'all':
+            count_query += " AND direction LIKE ?"
+            count_params.append(f"%{direction}%")
         
         count_cursor = await db.execute(count_query, count_params)
         total_count = (await count_cursor.fetchone())[0]
+        
+        # Get unique directions for filter dropdown
+        dir_cursor = await db.execute(
+            f"SELECT DISTINCT direction FROM vacancies WHERE {base_where} AND direction IS NOT NULL ORDER BY direction"
+        )
+        directions = [r[0] for r in await dir_cursor.fetchall() if r[0]]
 
     leads = []
     for r in rows:
@@ -259,9 +350,94 @@ async def get_accepted_leads(
             "response": r["response"] or "Ожидает",
             "last_seen": r["last_seen"],
             "tier": r["tier"],
-            "priority": r["priority"],
+            "rating": r["rating"] or 0,
+            "user_status": r["user_status"] or "new",
         })
-    return {"leads": leads, "total": total_count, "limit": limit, "offset": offset}
+    return {"leads": leads, "total": total_count, "limit": limit, "offset": offset, "directions": directions}
+
+# ─────────────────────────────────────────────
+# SINGLE VACANCY — полная информация
+# ─────────────────────────────────────────────
+
+@app.get("/api/vacancies/{vacancy_id}")
+async def get_vacancy(vacancy_id: int):
+    """Полная информация о вакансии/лиде."""
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, hash, text, source, direction, contact_link, response, "
+            "draft_response, rejection_reason, first_seen, last_seen, tier, "
+            "rating, user_status, informativeness_score "
+            "FROM vacancies WHERE id = ?",
+            (vacancy_id,)
+        )
+        row = await cursor.fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Вакансия не найдена")
+    
+    return {
+        "id": row["id"],
+        "hash": row["hash"],
+        "text": row["text"],
+        "source": row["source"],
+        "direction": row["direction"],
+        "contact": row["contact_link"],
+        "response": row["response"],
+        "draft_response": row["draft_response"],
+        "first_seen": row["first_seen"],
+        "last_seen": row["last_seen"],
+        "tier": row["tier"],
+        "rating": row["rating"] or 0,
+        "user_status": row["user_status"] or "new",
+        "informativeness_score": row["informativeness_score"] or 0,
+    }
+
+# ─────────────────────────────────────────────
+# UPDATE STATUS
+# ─────────────────────────────────────────────
+
+@app.put("/api/vacancies/{vacancy_id}/status")
+async def update_vacancy_status(vacancy_id: int, data: StatusUpdateRequest):
+    """Обновить пользовательский статус лида."""
+    valid = {'new', 'in_progress', 'sent', 'won', 'lost'}
+    if data.status not in valid:
+        raise HTTPException(status_code=400, detail=f"Статус должен быть одним из: {', '.join(valid)}")
+    
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "UPDATE vacancies SET user_status = ? WHERE id = ?",
+            (data.status, vacancy_id)
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Вакансия не найдена")
+    
+    return {"success": True, "id": vacancy_id, "user_status": data.status}
+
+# ─────────────────────────────────────────────
+# UPDATE RATING
+# ─────────────────────────────────────────────
+
+@app.put("/api/vacancies/{vacancy_id}/rating")
+async def update_vacancy_rating(vacancy_id: int, data: RatingUpdateRequest):
+    """Обновить рейтинг лида (1-5)."""
+    if not (0 <= data.rating <= 5):
+        raise HTTPException(status_code=400, detail="Рейтинг должен быть от 0 до 5")
+    
+    db_path = settings.VACANCY_DB_PATH
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "UPDATE vacancies SET rating = ? WHERE id = ?",
+            (data.rating, vacancy_id)
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Вакансия не найдена")
+    
+    return {"success": True, "id": vacancy_id, "rating": data.rating}
 
 # ─────────────────────────────────────────────
 # RESET QUEUE — сброс зависших лидов
@@ -291,7 +467,7 @@ async def reset_stuck_queue():
 
 @app.get("/api/logs/tail")
 async def tail_log(
-    log: str = Query("alexey", enum=["alexey", "gwen", "parser", "joiner"]),
+    log: str = Query("alexey", enum=["alexey", "gwen", "parser"]),
     n: int = Query(100, le=500)
 ):
     """Последние N строк выбранного лога."""

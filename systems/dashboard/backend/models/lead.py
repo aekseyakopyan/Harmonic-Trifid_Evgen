@@ -19,6 +19,10 @@ class LeadOut(BaseModel):
     last_interaction: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
+    # Ручная оценка качества лида
+    qual_score: Optional[int] = None   # 1-5: насколько лид целевой
+    fit_score: Optional[int] = None    # 1-5: насколько нам подходит
+    qual_notes: Optional[str] = None   # произвольные заметки
 
 
 class LeadPatch(BaseModel):
@@ -27,6 +31,9 @@ class LeadPatch(BaseModel):
     status: Optional[str] = None
     niche: Optional[str] = None
     source_channel: Optional[str] = None
+    qual_score: Optional[int] = None
+    fit_score: Optional[int] = None
+    qual_notes: Optional[str] = None
 
 
 class LeadListResponse(BaseModel):

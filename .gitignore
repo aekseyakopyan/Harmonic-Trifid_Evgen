@@ -65,6 +65,9 @@ telegram_chats.txt
 parsed_messages/
 temp_notify*
 admin_notifier*
+pids/
+*.bak
+report_today.md
 
 # Data & Backups
 data/

@@ -5,10 +5,85 @@ from models.prompt import PromptCreate, PromptUpdate
 router = APIRouter()
 
 
+DEFAULT_PROMPTS = [
+    {
+        "name": "Первичный аутрич",
+        "stage": "outreach",
+        "content": """Ты — Алексей, специалист по интернет-маркетингу.
+
+Тебе нужно написать первое сообщение потенциальному клиенту, который ищет специалиста по {specialization}.
+
+Правила:
+- Будь кратким (2-3 предложения)
+- Покажи, что читал их запрос
+- Упомяни конкретный релевантный кейс
+- Предложи созвон или уточняющий вопрос
+- Не используй шаблонные фразы ("рад помочь", "обращайтесь")
+
+Запрос клиента: {vacancy_text}
+Кейс: {case_data}"""
+    },
+    {
+        "name": "Follow-up #1",
+        "stage": "outreach",
+        "content": """Напиши мягкий follow-up через 2 дня после первого сообщения.
+
+Клиент: {full_name}
+Ниша: {niche}
+Предыдущее сообщение: {last_message}
+
+Правила:
+- Одно короткое предложение
+- Без давления
+- Добавь новую ценность (вопрос или мысль по теме)"""
+    },
+    {
+        "name": "Квалификация лида",
+        "stage": "dialog",
+        "content": """Ты ведёшь диалог с потенциальным клиентом.
+
+Твоя цель: выяснить 3 вещи:
+1. Есть ли конкретная задача (что именно нужно сделать)
+2. Есть ли бюджет (хотя бы порядок)
+3. Есть ли срочность (когда нужен результат)
+
+Контекст диалога: {dialog_history}
+
+Напиши следующее сообщение, которое естественно уточнит один из этих пунктов."""
+    },
+    {
+        "name": "LLM фильтр вакансий",
+        "stage": "filter",
+        "content": """Определи, является ли это сообщение реальной заявкой на услуги (заказчик ищет исполнителя) или нет.
+
+Сообщение: {text}
+Эвристический скор: {score}
+
+Ответь JSON:
+{
+  "is_real_lead": true/false,
+  "confidence": 0.0-1.0,
+  "reason": "краткое объяснение"
+}
+
+НЕ является лидом если: исполнитель предлагает услуги, агентство ищет сотрудника, спам/скам."""
+    },
+]
+
+
 @router.get("/")
 async def list_prompts():
     async with get_db() as db:
         rows = await db.execute_fetchall("SELECT * FROM prompts ORDER BY stage, name")
+        if not rows:
+            # Создаём дефолтные промпты при первом запросе
+            for p in DEFAULT_PROMPTS:
+                await db.execute(
+                    "INSERT INTO prompts(name,stage,content,version,is_active,created_at) VALUES(?,?,?,1,1,datetime('now'))",
+                    [p["name"], p["stage"], p["content"]],
+                )
+            await db.commit()
+            rows = await db.execute_fetchall("SELECT * FROM prompts ORDER BY stage, name")
     return [dict(r) for r in rows]
 
 

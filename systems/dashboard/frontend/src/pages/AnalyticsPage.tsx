@@ -53,6 +53,21 @@ export default function AnalyticsPage() {
     queryFn: () => analyticsApi.alexeyLoad().then(r => r.data),
   })
 
+  const { data: qualDist } = useQuery({
+    queryKey: ['analytics-qual'],
+    queryFn: () => analyticsApi.qualDistribution().then(r => r.data),
+  })
+
+  const { data: funnel } = useQuery({
+    queryKey: ['analytics-funnel'],
+    queryFn: () => analyticsApi.funnel().then(r => r.data),
+  })
+
+  const { data: qualTrend } = useQuery({
+    queryKey: ['analytics-qual-trend', period],
+    queryFn: () => analyticsApi.qualTrend(period).then(r => r.data as { dt: string; avg_qual: number | null; avg_fit: number | null; cnt: number }[]),
+  })
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -154,6 +169,106 @@ export default function AnalyticsPage() {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* Qual / Fit score distribution */}
+      {qualDist && (qualDist.qual.length > 0 || qualDist.fit.length > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          <div className="card">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-medium text-muted uppercase tracking-wide">Оценка «Целевой»</h2>
+              {qualDist.avg_qual && <span className="text-xs text-muted">Среднее: <span className="text-white font-bold">{qualDist.avg_qual}</span></span>}
+            </div>
+            <ResponsiveContainer width="100%" height={150}>
+              <BarChart data={[1,2,3,4,5].map(s => ({
+                score: `★${s}`,
+                cnt: qualDist.qual.find((q: {score: number}) => q.score === s)?.cnt ?? 0
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
+                <XAxis dataKey="score" tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }} />
+                <Bar dataKey="cnt" radius={[4,4,0,0]}>
+                  {[1,2,3,4,5].map((s, i) => (
+                    <Cell key={i} fill={s >= 4 ? '#10b981' : s === 3 ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="card">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-medium text-muted uppercase tracking-wide">Оценка «Подходит»</h2>
+              {qualDist.avg_fit && <span className="text-xs text-muted">Среднее: <span className="text-white font-bold">{qualDist.avg_fit}</span></span>}
+            </div>
+            <ResponsiveContainer width="100%" height={150}>
+              <BarChart data={[1,2,3,4,5].map(s => ({
+                score: `★${s}`,
+                cnt: qualDist.fit.find((q: {score: number}) => q.score === s)?.cnt ?? 0
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
+                <XAxis dataKey="score" tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }} />
+                <Bar dataKey="cnt" radius={[4,4,0,0]}>
+                  {[1,2,3,4,5].map((s, i) => (
+                    <Cell key={i} fill={s >= 4 ? '#6366f1' : s === 3 ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Filter funnel from vacancies.db */}
+      {funnel?.vacancies && (
+        <div className="card">
+          <h2 className="text-sm font-medium text-muted uppercase tracking-wide mb-4">Воронка фильтрации вакансий</h2>
+          <div className="flex gap-4">
+            {[
+              { label: 'Всего обработано', value: (funnel.vacancies.accepted || 0) + (funnel.vacancies.rejected || 0), color: 'bg-indigo-500' },
+              { label: 'Принято', value: funnel.vacancies.accepted || 0, color: 'bg-green-500' },
+              { label: 'Отклонено', value: funnel.vacancies.rejected || 0, color: 'bg-red-500' },
+            ].map(item => {
+              const total = (funnel.vacancies.accepted || 0) + (funnel.vacancies.rejected || 0)
+              const pct = total > 0 ? Math.round(item.value / total * 100) : 0
+              return (
+                <div key={item.label} className="flex-1 bg-surface rounded-lg p-4 text-center">
+                  <p className="text-xs text-muted mb-1">{item.label}</p>
+                  <p className="text-2xl font-bold">{item.value.toLocaleString()}</p>
+                  <div className="mt-2 h-1.5 bg-border rounded-full overflow-hidden">
+                    <div className={`h-full ${item.color} rounded-full`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <p className="text-xs text-muted mt-1">{pct}%</p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Qual/Fit score trend over time */}
+      {qualTrend && qualTrend.length > 0 && (
+        <div className="card">
+          <h2 className="text-sm font-medium text-muted uppercase tracking-wide mb-4">
+            Тренд оценок качества лидов
+          </h2>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={qualTrend}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
+              <XAxis dataKey="dt" tick={{ fontSize: 10, fill: '#6b7280' }} />
+              <YAxis domain={[0, 5]} tick={{ fontSize: 11, fill: '#6b7280' }} />
+              <Tooltip
+                contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
+                formatter={(v: unknown) => [Number(v).toFixed(2), '']}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Line type="monotone" dataKey="avg_qual" stroke="#10b981" strokeWidth={2} dot={false} name="Целевой" />
+              <Line type="monotone" dataKey="avg_fit" stroke="#6366f1" strokeWidth={2} dot={false} name="Подходит" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Alexey load */}
       {alexeyLoad && (

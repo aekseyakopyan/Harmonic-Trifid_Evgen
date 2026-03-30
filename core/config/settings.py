@@ -105,9 +105,26 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    # Supervisor Bot (для уведомлений об ошибках)
+    # Supervisor Bot (для уведомлений)
     SUPERVISOR_BOT_TOKEN: Optional[str] = None
     SUPERVISOR_CHAT_ID: Optional[int] = None  # Числовой chat ID (не username!)
+    # Дополнительные получатели уведомлений через запятую (числовые chat_id)
+    NOTIFY_CHAT_IDS: str = ""
+
+    @property
+    def notify_chat_ids(self) -> List[int]:
+        """Все получатели уведомлений: SUPERVISOR_CHAT_ID + NOTIFY_CHAT_IDS (без дублей)."""
+        ids: List[int] = []
+        if self.SUPERVISOR_CHAT_ID:
+            ids.append(self.SUPERVISOR_CHAT_ID)
+        if self.NOTIFY_CHAT_IDS:
+            for x in self.NOTIFY_CHAT_IDS.split(","):
+                x = x.strip()
+                if x.lstrip("-").isdigit():
+                    cid = int(x)
+                    if cid not in ids:
+                        ids.append(cid)
+        return ids
 
     # Logging
     LOG_LEVEL: str = "INFO"

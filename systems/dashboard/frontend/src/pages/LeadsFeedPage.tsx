@@ -1,34 +1,63 @@
 import { useState, useCallback } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { leadsApi } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Lead } from '../types'
-import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X } from 'lucide-react'
 import clsx from 'clsx'
 import { formatDistanceToNow } from 'date-fns'
 import { ru } from 'date-fns/locale'
 
 const TIER_OPTIONS = ['', 'HOT', 'WARM', 'COLD']
 const STATUS_OPTIONS = ['', 'new', 'contacted', 'qualified', 'lost']
+const QUAL_OPTIONS = [
+  { value: '', label: 'Любая оценка' },
+  { value: '5', label: '★★★★★  5' },
+  { value: '4', label: '★★★★☆  4' },
+  { value: '3', label: '★★★☆☆  3' },
+  { value: '1', label: '★☆☆☆☆  ≤2' },
+]
 const PAGE_SIZE = 50
 
 function TierBadge({ tier }: { tier: string | null }) {
-  if (!tier || tier === 'COLD') return <span className="badge-cold">COLD</span>
-  if (tier === 'HOT') return <span className="badge-hot">HOT</span>
-  if (tier === 'WARM') return <span className="badge-warm">WARM</span>
-  return <span className="badge-cold">{tier}</span>
+  if (tier === 'HOT') return <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">HOT</span>
+  if (tier === 'WARM') return <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400">WARM</span>
+  return <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">COLD</span>
 }
 
-function ScoreBar({ score }: { score: number }) {
-  const pct = Math.min(100, Math.max(0, score))
-  const color = pct >= 70 ? 'bg-red-500' : pct >= 40 ? 'bg-amber-500' : 'bg-blue-500'
+function StarRating({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted text-xs">—</span>
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden">
-        <div className={clsx('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs text-muted">{score.toFixed(0)}</span>
+    <span className={`text-xs font-bold ${value >= 4 ? 'text-green-400' : value === 3 ? 'text-amber-400' : 'text-red-400'}`}>
+      {'★'.repeat(value)}{'☆'.repeat(5 - value)}
+    </span>
+  )
+}
+
+function QuickTierButtons({ leadId, currentTier, onDone }: { leadId: number; currentTier: string | null; onDone: () => void }) {
+  const qc = useQueryClient()
+  const patch = useMutation({
+    mutationFn: (tier: string) => leadsApi.patch(leadId, { tier }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leads'] }); onDone() },
+  })
+  return (
+    <div className="flex gap-1">
+      {[
+        { t: 'HOT', icon: <Flame className="w-3 h-3" />, cls: 'text-red-400 hover:bg-red-500/20' },
+        { t: 'WARM', icon: <Thermometer className="w-3 h-3" />, cls: 'text-amber-400 hover:bg-amber-500/20' },
+        { t: 'COLD', icon: <Snowflake className="w-3 h-3" />, cls: 'text-blue-400 hover:bg-blue-500/20' },
+      ].map(({ t, icon, cls }) => (
+        <button
+          key={t}
+          title={t}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); patch.mutate(t) }}
+          className={clsx('p-1 rounded transition-colors', cls, currentTier === t ? 'opacity-50 cursor-default' : '')}
+          disabled={currentTier === t || patch.isPending}
+        >
+          {icon}
+        </button>
+      ))}
     </div>
   )
 }
@@ -37,12 +66,15 @@ export default function LeadsFeedPage() {
   const [search, setSearch] = useState('')
   const [tier, setTier] = useState('')
   const [status, setStatus] = useState('')
+  const [qualFilter, setQualFilter] = useState('')
   const [page, setPage] = useState(0)
   const [archived, setArchived] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [hoverRow, setHoverRow] = useState<number | null>(null)
   const qc = useQueryClient()
 
   const { data, isLoading } = useQuery({
-    queryKey: ['leads', search, tier, status, archived, page],
+    queryKey: ['leads', search, tier, status, archived, page, qualFilter],
     queryFn: () =>
       leadsApi.list({
         search: search || undefined,
@@ -52,6 +84,15 @@ export default function LeadsFeedPage() {
         skip: page * PAGE_SIZE,
         limit: PAGE_SIZE,
       }).then(r => r.data),
+  })
+
+  const bulkMutation = useMutation({
+    mutationFn: ({ action, value }: { action: string; value?: string }) =>
+      leadsApi.bulk(Array.from(selectedIds), action, value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['leads'] })
+      setSelectedIds(new Set())
+    },
   })
 
   useWebSocket('leads', useCallback(() => {
@@ -67,24 +108,44 @@ export default function LeadsFeedPage() {
     a.click()
   }
 
-  const leads: Lead[] = data?.items ?? []
+  // Client-side qual filter (backend doesn't support it yet)
+  let leads: Lead[] = data?.items ?? []
+  if (qualFilter === '5') leads = leads.filter(l => l.qual_score === 5)
+  else if (qualFilter === '4') leads = leads.filter(l => l.qual_score === 4)
+  else if (qualFilter === '3') leads = leads.filter(l => l.qual_score === 3)
+  else if (qualFilter === '1') leads = leads.filter(l => l.qual_score != null && l.qual_score <= 2)
+
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
+  const allSelected = leads.length > 0 && leads.every(l => selectedIds.has(l.id))
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(prev => { const s = new Set(prev); leads.forEach(l => s.delete(l.id)); return s })
+    } else {
+      setSelectedIds(prev => { const s = new Set(prev); leads.forEach(l => s.add(l.id)); return s })
+    }
+  }
+  const toggleOne = (id: number) => {
+    setSelectedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
+  }
+
+  const selCount = selectedIds.size
+
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold">Лиды</h1>
           <p className="text-sm text-muted mt-0.5">Всего: {total}</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={handleExport} className="btn-ghost flex items-center gap-1.5">
+          <button onClick={handleExport} className="btn-ghost flex items-center gap-1.5 text-sm">
             <Download className="w-4 h-4" /> CSV
           </button>
           <button
             onClick={() => setArchived(!archived)}
-            className={clsx('btn-ghost flex items-center gap-1.5', archived && 'text-white')}
+            className={clsx('btn-ghost flex items-center gap-1.5 text-sm', archived && 'text-white')}
           >
             <Archive className="w-4 h-4" />
             {archived ? 'Архив' : 'Активные'}
@@ -93,93 +154,180 @@ export default function LeadsFeedPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4">
-        <div className="relative flex-1 max-w-xs">
+      <div className="flex flex-wrap gap-2 mb-4">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
           <input
             className="input w-full pl-9"
-            placeholder="Поиск по имени / username"
+            placeholder="Имя / username"
             value={search}
             onChange={e => { setSearch(e.target.value); setPage(0) }}
           />
         </div>
-        <select
-          className="input"
-          value={tier}
-          onChange={e => { setTier(e.target.value); setPage(0) }}
-        >
-          {TIER_OPTIONS.map(t => (
-            <option key={t} value={t}>{t || 'Все тиры'}</option>
-          ))}
+        <select className="input" value={tier} onChange={e => { setTier(e.target.value); setPage(0) }}>
+          {TIER_OPTIONS.map(t => <option key={t} value={t}>{t || 'Все тиры'}</option>)}
         </select>
-        <select
-          className="input"
-          value={status}
-          onChange={e => { setStatus(e.target.value); setPage(0) }}
-        >
-          {STATUS_OPTIONS.map(s => (
-            <option key={s} value={s}>{s || 'Все статусы'}</option>
-          ))}
+        <select className="input" value={status} onChange={e => { setStatus(e.target.value); setPage(0) }}>
+          {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s || 'Все статусы'}</option>)}
         </select>
+        <select className="input" value={qualFilter} onChange={e => setQualFilter(e.target.value)}>
+          {QUAL_OPTIONS.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+        </select>
+        {(tier || status || qualFilter || search) && (
+          <button
+            className="btn-ghost text-xs text-muted hover:text-white"
+            onClick={() => { setTier(''); setStatus(''); setQualFilter(''); setSearch(''); setPage(0) }}
+          >
+            ✕ Сбросить
+          </button>
+        )}
       </div>
 
-      {/* Table */}
+      {/* Bulk action bar */}
+      {selCount > 0 && (
+        <div className="flex items-center gap-3 mb-3 px-4 py-2.5 bg-accent/10 border border-accent/30 rounded-lg">
+          <span className="text-sm font-medium text-accent">Выбрано: {selCount}</span>
+          <div className="flex gap-2 ml-2">
+            <button
+              className="px-3 py-1 rounded text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+              onClick={() => bulkMutation.mutate({ action: 'set_tier', value: 'HOT' })}
+              disabled={bulkMutation.isPending}
+            >
+              🔥 HOT
+            </button>
+            <button
+              className="px-3 py-1 rounded text-xs bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors"
+              onClick={() => bulkMutation.mutate({ action: 'set_tier', value: 'WARM' })}
+              disabled={bulkMutation.isPending}
+            >
+              🌡 WARM
+            </button>
+            <button
+              className="px-3 py-1 rounded text-xs bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors"
+              onClick={() => bulkMutation.mutate({ action: 'set_status', value: 'qualified' })}
+              disabled={bulkMutation.isPending}
+            >
+              ✓ Квал
+            </button>
+            <button
+              className="px-3 py-1 rounded text-xs bg-border text-muted hover:text-white transition-colors"
+              onClick={() => { if (confirm(`Архивировать ${selCount} лидов?`)) bulkMutation.mutate({ action: 'archive' }) }}
+              disabled={bulkMutation.isPending}
+            >
+              <Archive className="w-3 h-3 inline mr-1" />Архив
+            </button>
+          </div>
+          <button
+            className="ml-auto text-muted hover:text-white"
+            onClick={() => setSelectedIds(new Set())}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Table with horizontal scroll */}
       <div className="card overflow-hidden p-0">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-muted text-left">
-              <th className="px-4 py-3 font-medium">Лид</th>
-              <th className="px-4 py-3 font-medium">Тир</th>
-              <th className="px-4 py-3 font-medium">Скор</th>
-              <th className="px-4 py-3 font-medium">Ниша</th>
-              <th className="px-4 py-3 font-medium">Статус</th>
-              <th className="px-4 py-3 font-medium">Последнее взаимодействие</th>
-              <th className="px-4 py-3 font-medium w-20"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted">
-                  <RefreshCw className="w-5 h-5 animate-spin mx-auto" />
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[900px]">
+            <thead>
+              <tr className="border-b border-border text-muted text-left bg-card">
+                <th className="px-3 py-3 w-8">
+                  <button onClick={toggleAll} className="text-muted hover:text-white transition-colors">
+                    {allSelected ? <CheckSquare className="w-4 h-4 text-accent" /> : <Square className="w-4 h-4" />}
+                  </button>
+                </th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Лид</th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Тир</th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Скор</th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">
+                  <span className="flex items-center gap-1"><Star className="w-3 h-3" />Целевой</span>
+                </th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">
+                  <span className="flex items-center gap-1"><Star className="w-3 h-3" />Подходит</span>
+                </th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Ниша</th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Статус</th>
+                <th className="px-4 py-3 font-medium whitespace-nowrap">Последнее</th>
+                <th className="px-3 py-3 font-medium w-24"></th>
               </tr>
-            )}
-            {!isLoading && leads.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted">Лиды не найдены</td>
-              </tr>
-            )}
-            {leads.map(lead => (
-              <tr key={lead.id} className="border-b border-border/50 hover:bg-white/3 transition-colors">
-                <td className="px-4 py-3">
-                  <Link to={`/leads/${lead.id}`} className="hover:text-accent transition-colors">
-                    <div className="font-medium">{lead.full_name || '—'}</div>
-                    {lead.username && (
-                      <div className="text-xs text-muted">@{lead.username}</div>
-                    )}
-                  </Link>
-                </td>
-                <td className="px-4 py-3"><TierBadge tier={lead.tier} /></td>
-                <td className="px-4 py-3"><ScoreBar score={lead.lead_score} /></td>
-                <td className="px-4 py-3 text-muted text-xs">{lead.niche || '—'}</td>
-                <td className="px-4 py-3">
-                  <span className="text-xs text-muted">{lead.status}</span>
-                </td>
-                <td className="px-4 py-3 text-xs text-muted">
-                  {lead.last_interaction
-                    ? formatDistanceToNow(new Date(lead.last_interaction), { addSuffix: true, locale: ru })
-                    : '—'}
-                </td>
-                <td className="px-4 py-3">
-                  <Link to={`/leads/${lead.id}`} className="btn-ghost py-1 px-2 text-xs">
-                    →
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {isLoading && (
+                <tr>
+                  <td colSpan={10} className="px-4 py-10 text-center text-muted">
+                    <RefreshCw className="w-5 h-5 animate-spin mx-auto" />
+                  </td>
+                </tr>
+              )}
+              {!isLoading && leads.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-4 py-10 text-center text-muted">Лиды не найдены</td>
+                </tr>
+              )}
+              {leads.map(lead => (
+                <tr
+                  key={lead.id}
+                  className={clsx(
+                    'border-b border-border/40 transition-colors',
+                    selectedIds.has(lead.id) ? 'bg-accent/5' : 'hover:bg-white/3'
+                  )}
+                  onMouseEnter={() => setHoverRow(lead.id)}
+                  onMouseLeave={() => setHoverRow(null)}
+                >
+                  <td className="px-3 py-3">
+                    <button onClick={() => toggleOne(lead.id)} className="text-muted hover:text-white transition-colors">
+                      {selectedIds.has(lead.id)
+                        ? <CheckSquare className="w-4 h-4 text-accent" />
+                        : <Square className="w-4 h-4" />}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Link to={`/leads/${lead.id}`} className="hover:text-accent transition-colors">
+                      <div className="font-medium whitespace-nowrap">{lead.full_name || `#${lead.id}`}</div>
+                      {lead.username && <div className="text-xs text-muted">@{lead.username}</div>}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {hoverRow === lead.id
+                      ? <QuickTierButtons leadId={lead.id} currentTier={lead.tier} onDone={() => setHoverRow(null)} />
+                      : <TierBadge tier={lead.tier} />}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div className="flex items-center gap-2">
+                      <div className="w-14 h-1.5 bg-border rounded-full overflow-hidden">
+                        <div
+                          className={clsx('h-full rounded-full', lead.lead_score >= 70 ? 'bg-red-500' : lead.lead_score >= 40 ? 'bg-amber-500' : 'bg-indigo-500')}
+                          style={{ width: `${Math.min(100, Math.max(0, lead.lead_score))}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-muted font-mono">{lead.lead_score.toFixed(0)}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3"><StarRating value={lead.qual_score} /></td>
+                  <td className="px-4 py-3"><StarRating value={lead.fit_score} /></td>
+                  <td className="px-4 py-3 text-muted text-xs whitespace-nowrap max-w-[120px] truncate">{lead.niche || '—'}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className={`text-xs px-2 py-0.5 rounded ${
+                      lead.status === 'qualified' ? 'bg-green-500/20 text-green-400' :
+                      lead.status === 'contacted' ? 'bg-blue-500/20 text-blue-400' :
+                      lead.status === 'lost' ? 'bg-red-500/20 text-red-400' :
+                      'bg-border text-muted'
+                    }`}>{lead.status}</span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted whitespace-nowrap">
+                    {lead.last_interaction
+                      ? formatDistanceToNow(new Date(lead.last_interaction), { addSuffix: true, locale: ru })
+                      : '—'}
+                  </td>
+                  <td className="px-3 py-3">
+                    <Link to={`/leads/${lead.id}`} className="btn-ghost p-1 text-xs">→</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Pagination */}
@@ -189,18 +337,11 @@ export default function LeadsFeedPage() {
             {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} из {total}
           </span>
           <div className="flex gap-2">
-            <button
-              className="btn-ghost"
-              disabled={page === 0}
-              onClick={() => setPage(p => p - 1)}
-            >
+            <button className="btn-ghost" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <button
-              className="btn-ghost"
-              disabled={page >= totalPages - 1}
-              onClick={() => setPage(p => p + 1)}
-            >
+            <span className="text-xs text-muted self-center px-2">{page + 1} / {totalPages}</span>
+            <button className="btn-ghost" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>

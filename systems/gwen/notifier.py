@@ -1,237 +1,203 @@
 """
-Supervisor Notifier - отправляет уведомления через отдельный Telegram бот.
+Supervisor Notifier — отправляет уведомления через отдельный Telegram бот.
+
+Получатели: SUPERVISOR_CHAT_ID + все chat_id из NOTIFY_CHAT_IDS (.env)
+
+Нужные уведомления:
+  - notify_new_vacancy()   — новая вакансия с кнопками одобрения
+  - notify_block()         — Гвен заблокировала исходящее сообщение
+  - send_critical()        — PEER_FLOOD / спам-блок / смена статуса сервиса
+  - send_filter_report()   — еженедельный отчёт по фильтрам
+
+Убраны (спам):
+  - ✅ @login на каждую отправку
+  - ⚠️ нет контакта
+  - 📬 ручная отправка
+  - 🧠 Гвен обновила фильтры (нет действий — только лог)
+  - notify_stats()          — нигде не вызывалась
 """
 import httpx
 import asyncio
-from typing import Optional
+from typing import List, Optional
 from core.config.settings import settings
 from core.utils.logger import logger
 
 
 class SupervisorNotifier:
     """
-    Отправляет уведомления об ошибках супервизора через отдельный Telegram бот.
+    Рассылает уведомления всем получателям из settings.notify_chat_ids.
     """
-    
+
     def __init__(self):
         self.bot_token = settings.SUPERVISOR_BOT_TOKEN
-        self.chat_id = settings.SUPERVISOR_CHAT_ID
         self.enabled = bool(self.bot_token)
-        
+
         if not self.enabled:
             logger.warning("Supervisor bot token not configured. Notifications disabled.")
-    
-    async def notify_block(self, entity: str, message: str, verdict: dict):
-        """
-        Отправляет уведомление о заблокированном сообщении.
-        
-        Args:
-            entity: Получатель, которому НЕ было отправлено сообщение
-            message: Текст заблокированного сообщения
-            verdict: Вердикт супервизора с причиной блокировки
-        """
-        if not self.enabled:
-            logger.debug("Supervisor notifications disabled")
-            return
-        
-        try:
-            # Формируем текст уведомления
-            notification = (
-                f"🧠 <b>ГВЕН ЗАБЛОКИРОВАЛА СООБЩЕНИЕ</b>\n\n"
-                f"<b>Получатель:</b> {entity}\n"
-                f"<b>Причина:</b> {verdict['reason']}\n"
-                f"<b>Уверенность:</b> {verdict['confidence']*100:.0f}%\n\n"
-                f"<b>Заблокированный текст:</b>\n"
-                f"<code>{self._escape_html(message[:500])}</code>"
-            )
-            
-            # Отправляем через Telegram Bot API
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    url,
-                    json={
-                        "chat_id": self.chat_id,
-                        "text": notification,
-                        "parse_mode": "HTML"
-                    }
-                )
-                response.raise_for_status()
-                logger.info(f"✅ Supervisor notification sent to {self.chat_id}")
-                
-        except Exception as e:
-            logger.error(f"Failed to send supervisor notification: {e}")
-    
-    async def notify_stats(self, stats: dict):
-        """
-        Отправляет статистику работы супервизора.
-        """
+
+    # ------------------------------------------------------------------
+    # Внутренний метод рассылки всем получателям
+    # ------------------------------------------------------------------
+
+    async def _broadcast(self, payload: dict):
+        """Отправляет одно сообщение всем chat_id из notify_chat_ids."""
         if not self.enabled:
             return
-        
-        try:
-            notification = (
-                f"📊 <b>Статистика Гвен</b>\n\n"
-                f"✅ Разрешено: {stats['allowed']}\n"
-                f"❌ Заблокировано: {stats['blocked']}\n"
-                f"📈 Всего: {stats['total']}"
-            )
-            
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    url,
-                    json={
-                        "chat_id": self.chat_id,
-                        "text": notification,
-                        "parse_mode": "HTML"
-                    }
-                )
-                response.raise_for_status()
-                
-        except Exception as e:
-            logger.error(f"Failed to send supervisor stats: {e}")
-    
+
+        recipients: List[int] = settings.notify_chat_ids
+        if not recipients:
+            logger.warning("No notification recipients configured (SUPERVISOR_CHAT_ID / NOTIFY_CHAT_IDS).")
+            return
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for chat_id in recipients:
+                try:
+                    data = {**payload, "chat_id": chat_id}
+                    resp = await client.post(url, json=data)
+                    resp.raise_for_status()
+                    logger.info(f"Notification sent to {chat_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send notification to {chat_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Публичные методы
+    # ------------------------------------------------------------------
+
     async def notify_new_vacancy(self, vacancy: dict):
         """
-        Уведомляет пользователя о новой найденной вакансии. 
-        По запросу пользователя: упрощенный вид (только текст вакансии и кнопка ОК).
+        Уведомляет всех получателей о новой вакансии.
+        Включает кнопки: Одобрить / Заблокировать / Дубль / Спам.
         """
         if not self.enabled:
             return
-            
+
         try:
             status = vacancy.get('status_message', '🔔 НОВАЯ ВАКАНСИЯ')
             v_hash = vacancy.get('hash')
             v_text = vacancy.get('text', '')
-            direction = vacancy.get('direction', 'Digital Marketing')
             contact_link = vacancy.get('contact_link')
-            
-            # Проверка на ДУБЛЬ (уже отправляли этому человеку?)
-            is_dupe = False
+
+            # Проверка на дубль
             if contact_link and contact_link != "Не найден":
                 import sqlite3
                 conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM vacancies WHERE contact_link = ? AND response IS NOT NULL AND response != '' AND hash != ?", (contact_link, v_hash))
+                cursor.execute(
+                    "SELECT COUNT(*) FROM vacancies "
+                    "WHERE contact_link = ? AND response IS NOT NULL AND response != '' AND hash != ?",
+                    (contact_link, v_hash)
+                )
                 if cursor.fetchone()[0] > 0:
-                    is_dupe = True
+                    status = "👯 ДУБЛИКАТ (Ранее уже писали)"
                 conn.close()
 
-            # Проверка на исторический лид
-            is_historical = (vacancy.get('rejection_reason') == 'HISTORICAL_LOAD_2024_2026')
-            
-            if is_dupe:
-                status = f"👯 ДУБЛИКАТ (Ранее уже писали)"
-            elif is_historical:
-                status = f"🕰️ ИСТОРИЧЕСКИЙ ЛИД (Гвен видела это в 2024-2025)"
+            if vacancy.get('rejection_reason') == 'HISTORICAL_LOAD_2024_2026':
+                status = "🕰️ ИСТОРИЧЕСКИЙ ЛИД (Гвен видела это в 2024-2025)"
 
-            # Сокращаем текст вакансии для уведомления, но оставляем суть
             short_text = self._escape_html(v_text[:700])
             if len(v_text) > 700:
                 short_text += "..."
 
-            # Упрощенный вид по просьбе пользователя
-            notification = (
+            text = (
                 f"{status}\n\n"
-                f"📍 <b>Запрос:</b>\n"
-                f"{short_text}\n\n"
+                f"📍 <b>Запрос:</b>\n{short_text}\n\n"
                 f"🔗 <a href='{vacancy.get('contact_link', '#')}'>Связаться</a>"
             )
-            
-            # Кнопки для управления
+
             reply_markup = None
             if "ОТПРАВЛЕНО" not in status:
                 reply_markup = {
                     "inline_keyboard": [
-                        [
-                            {"text": "✅ Одобрить и отправить", "callback_data": f"outreach_send_{v_hash}"},
-                        ],
+                        [{"text": "✅ Одобрить и отправить", "callback_data": f"outreach_send_{v_hash}"}],
                         [
                             {"text": "🚫 Заблокировать", "callback_data": f"outreach_block_{v_hash}"},
-                            {"text": "👯 Дубль", "callback_data": f"outreach_duplicate_{v_hash}"}
+                            {"text": "👯 Дубль",         "callback_data": f"outreach_duplicate_{v_hash}"}
                         ],
                         [{"text": "🗑 Спам", "callback_data": f"outreach_ignore_{v_hash}"}]
                     ]
                 }
-            
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                data = {
-                    "chat_id": self.chat_id,
-                    "text": notification,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True
-                }
-                if reply_markup:
-                    data["reply_markup"] = reply_markup
-                    
-                response = await client.post(url, json=data)
-                response.raise_for_status()
-                
-        except Exception as e:
-            logger.error(f"Failed to send vacancy notification: {e}")
 
-    async def send_error(self, message: str):
+            payload = {"text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
+            await self._broadcast(payload)
+
+        except Exception as e:
+            logger.error(f"notify_new_vacancy error: {e}")
+
+    async def notify_block(self, entity: str, message: str, verdict: dict):
         """
-        Отправляет текстовое уведомление (ошибку или статус) администратору.
+        Уведомляет о заблокированном исходящем сообщении.
         """
         if not self.enabled:
             return
-            
+
         try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    url,
-                    json={
-                        "chat_id": self.chat_id,
-                        "text": message,
-                        "parse_mode": "HTML"
-                    }
-                )
-                response.raise_for_status()
+            text = (
+                f"🧠 <b>ГВЕН ЗАБЛОКИРОВАЛА СООБЩЕНИЕ</b>\n\n"
+                f"<b>Получатель:</b> {entity}\n"
+                f"<b>Причина:</b> {verdict['reason']}\n"
+                f"<b>Уверенность:</b> {verdict['confidence'] * 100:.0f}%\n\n"
+                f"<b>Текст:</b>\n<code>{self._escape_html(message[:500])}</code>"
+            )
+            await self._broadcast({"text": text, "parse_mode": "HTML"})
         except Exception as e:
-            logger.error(f"Failed to send error notification: {e}")
+            logger.error(f"notify_block error: {e}")
+
+    async def send_critical(self, message: str):
+        """
+        Отправляет критическое уведомление всем получателям.
+        Использовать только для важных событий:
+          - PEER_FLOOD / спам-блок
+          - смена статуса сервиса (health check)
+          - критические сбои
+        """
+        if not self.enabled:
+            return
+
+        try:
+            await self._broadcast({"text": message, "parse_mode": "HTML"})
+        except Exception as e:
+            logger.error(f"send_critical error: {e}")
+
+    # Алиас для обратной совместимости — оставлен, но вызывается только
+    # для КРИТИЧЕСКИХ событий (PEER_FLOOD, спам-блок, health alert).
+    # Для логов успешных отправок — НЕ использовать.
+    send_error = send_critical
 
     async def send_filter_report(self, report_text: str, phrases_count: int):
         """
-        Отправляет еженедельный отчёт фильтра с кнопками одобрения/отклонения рекомендаций.
+        Еженедельный отчёт фильтра с кнопками одобрения / отклонения рекомендаций.
         """
         if not self.enabled:
             return
 
         try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
             if phrases_count > 0:
                 footer = f"\n\n💡 <b>Найдено {phrases_count} фраз для стоп-листа.</b>\nПрименить их к фильтру?"
                 reply_markup = {
                     "inline_keyboard": [[
                         {"text": f"✅ Применить ({phrases_count} фраз)", "callback_data": "filter_apply_confirm"},
-                        {"text": "❌ Отклонить", "callback_data": "filter_apply_reject"}
+                        {"text": "❌ Отклонить",                         "callback_data": "filter_apply_reject"}
                     ]]
                 }
             else:
                 footer = "\n\n✅ Конкретных фраз для добавления не найдено."
                 reply_markup = None
 
-            data = {
-                "chat_id": self.chat_id,
+            payload = {
                 "text": report_text[:4000] + footer,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True
             }
             if reply_markup:
-                data["reply_markup"] = reply_markup
+                payload["reply_markup"] = reply_markup
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(url, json=data)
-                response.raise_for_status()
+            await self._broadcast(payload)
         except Exception as e:
-            logger.error(f"Failed to send filter report: {e}")
+            logger.error(f"send_filter_report error: {e}")
 
     def _escape_html(self, text: str) -> str:
         if not text:
