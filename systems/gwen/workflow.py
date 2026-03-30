@@ -37,8 +37,10 @@ class LeadWorkflow:
         try:
             from systems.parser.outreach_generator import outreach_generator
             
-            text = lead_data["text"]
-            direction = lead_data["direction"]
+            text = lead_data.get("text", "")
+            direction = lead_data.get("direction", "Digital Marketing")
+            if not text:
+                return
             
             draft = await outreach_generator.generate_draft(text, direction, is_old=False)
             if draft:

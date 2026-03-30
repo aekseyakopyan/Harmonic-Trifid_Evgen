@@ -33,57 +33,22 @@ class ReportGenerator:
         # Получаем данные из БД
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Начало и конец дня
-        start_time = f"{date} 00:00:00"
-        end_time = f"{date} 23:59:59"
-        
-        # Всего сообщений
-        cursor.execute("""
-            SELECT COUNT(*) as total 
-            FROM vacancies 
-            WHERE last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        total_messages = cursor.fetchone()['total']
-        
-        # Одобренные
-        cursor.execute("""
-            SELECT COUNT(*) as accepted 
-            FROM vacancies 
-            WHERE status = 'accepted' AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        accepted = cursor.fetchone()['accepted']
-        
-        # Отклоненные
-        cursor.execute("""
-            SELECT COUNT(*) as rejected 
-            FROM vacancies 
-            WHERE status = 'rejected' AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        rejected = cursor.fetchone()['rejected']
-        
-        # Отправленные отклики
-        cursor.execute("""
-            SELECT COUNT(*) as sent 
-            FROM vacancies 
-            WHERE response IS NOT NULL AND response != 'notified' 
-            AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        sent_responses = cursor.fetchone()['sent']
-        
-        # Топ источников (чаты)
-        cursor.execute("""
-            SELECT source, COUNT(*) as count 
-            FROM vacancies 
-            WHERE last_seen >= ? AND last_seen <= ?
-            GROUP BY source 
-            ORDER BY count DESC 
-            LIMIT 5
-        """, (start_time, end_time))
-        top_sources = cursor.fetchall()
-        
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            start_time = f"{date} 00:00:00"
+            end_time = f"{date} 23:59:59"
+            cursor.execute("SELECT COUNT(*) as total FROM vacancies WHERE last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            total_messages = cursor.fetchone()['total']
+            cursor.execute("SELECT COUNT(*) as accepted FROM vacancies WHERE status = 'accepted' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            accepted = cursor.fetchone()['accepted']
+            cursor.execute("SELECT COUNT(*) as rejected FROM vacancies WHERE status = 'rejected' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            rejected = cursor.fetchone()['rejected']
+            cursor.execute("SELECT COUNT(*) as sent FROM vacancies WHERE response IS NOT NULL AND response != 'notified' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            sent_responses = cursor.fetchone()['sent']
+            cursor.execute("SELECT source, COUNT(*) as count FROM vacancies WHERE last_seen >= ? AND last_seen <= ? GROUP BY source ORDER BY count DESC LIMIT 5", (start_time, end_time))
+            top_sources = cursor.fetchall()
+        finally:
+            conn.close()
         
         # Формируем отчет
         metrics = {
@@ -147,67 +112,32 @@ class ReportGenerator:
         
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        start_time = f"{start_date} 00:00:00"
-        end_time = f"{end_date} 23:59:59"
-        
-        # Общая статистика за неделю
-        cursor.execute("""
-            SELECT COUNT(*) as total 
-            FROM vacancies 
-            WHERE last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        total_messages = cursor.fetchone()['total']
-        
-        cursor.execute("""
-            SELECT COUNT(*) as accepted 
-            FROM vacancies 
-            WHERE status = 'accepted' AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        accepted = cursor.fetchone()['accepted']
-        
-        cursor.execute("""
-            SELECT COUNT(*) as rejected 
-            FROM vacancies 
-            WHERE status = 'rejected' AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        rejected = cursor.fetchone()['rejected']
-        
-        cursor.execute("""
-            SELECT COUNT(*) as sent 
-            FROM vacancies 
-            WHERE response IS NOT NULL AND response != 'notified' 
-            AND last_seen >= ? AND last_seen <= ?
-        """, (start_time, end_time))
-        sent_responses = cursor.fetchone()['sent']
-        
-        # Разбивка по дням
-        daily_breakdown = []
-        for i in range(7):
-            day = start + timedelta(days=i)
-            day_str = day.strftime('%Y-%m-%d')
-            day_start = f"{day_str} 00:00:00"
-            day_end = f"{day_str} 23:59:59"
-            
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted,
-                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
-                FROM vacancies 
-                WHERE last_seen >= ? AND last_seen <= ?
-            """, (day_start, day_end))
-            
-            row = cursor.fetchone()
-            daily_breakdown.append({
-                "date": day_str,
-                "total": row['total'] or 0,
-                "accepted": row['accepted'] or 0,
-                "rejected": row['rejected'] or 0
-            })
-        
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            start_time = f"{start_date} 00:00:00"
+            end_time = f"{end_date} 23:59:59"
+            cursor.execute("SELECT COUNT(*) as total FROM vacancies WHERE last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            total_messages = cursor.fetchone()['total']
+            cursor.execute("SELECT COUNT(*) as accepted FROM vacancies WHERE status = 'accepted' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            accepted = cursor.fetchone()['accepted']
+            cursor.execute("SELECT COUNT(*) as rejected FROM vacancies WHERE status = 'rejected' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            rejected = cursor.fetchone()['rejected']
+            cursor.execute("SELECT COUNT(*) as sent FROM vacancies WHERE response IS NOT NULL AND response != 'notified' AND last_seen >= ? AND last_seen <= ?", (start_time, end_time))
+            sent_responses = cursor.fetchone()['sent']
+            daily_breakdown = []
+            for i in range(7):
+                day = start + timedelta(days=i)
+                day_str = day.strftime('%Y-%m-%d')
+                cursor.execute("""
+                    SELECT COUNT(*) as total,
+                        SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted,
+                        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected
+                    FROM vacancies WHERE last_seen >= ? AND last_seen <= ?
+                """, (f"{day_str} 00:00:00", f"{day_str} 23:59:59"))
+                row = cursor.fetchone()
+                daily_breakdown.append({"date": day_str, "total": row['total'] or 0, "accepted": row['accepted'] or 0, "rejected": row['rejected'] or 0})
+        finally:
+            conn.close()
         
         metrics = {
             "period": f"{start_date} — {end_date}",

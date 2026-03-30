@@ -162,7 +162,13 @@ async def main():
     # Pyrogram 2.0.106 bug: updates_watchdog_task never started automatically.
     # Without it, Telegram stops sending updates after a few minutes of inactivity.
     # Fix: start it manually — every 5 min it calls GetState() to re-subscribe.
-    client.updates_watchdog_task = asyncio.create_task(client.updates_watchdog())
+    async def _safe_watchdog():
+        try:
+            await client.updates_watchdog()
+        except Exception as e:
+            logger.error(f"Pyrogram updates_watchdog crashed: {e}")
+
+    client.updates_watchdog_task = asyncio.create_task(_safe_watchdog())
     logger.info("✅ Pyrogram updates watchdog started")
 
     # Start background tasks (обёртка ловит исключения, иначе они теряются в create_task)

@@ -1,8 +1,14 @@
 import os
 import time
-import torch
 from typing import Dict, Any
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from core.utils.logger import logger
+
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 # Путь к дообученной модели (создаётся scripts/finetune_bert.py)
 FINETUNED_PATH = os.path.join(os.path.dirname(__file__), "bert_finetuned")
@@ -18,30 +24,45 @@ class BERTLeadClassifier:
     """
 
     def __init__(self):
-        # Выбор устройства
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        elif torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
+        self.model = None
+        self.tokenizer = None
+        self._version = "BERT_UNAVAILABLE"
 
-        # Загрузка дообученной модели или базовой
-        if os.path.isdir(FINETUNED_PATH) and os.path.exists(os.path.join(FINETUNED_PATH, "config.json")):
-            model_path = FINETUNED_PATH
-            self._version = "BERT_FINETUNED_v1"
-        else:
-            model_path = FALLBACK_MODEL
-            self._version = "BERT_BASE"
+        if not TORCH_AVAILABLE:
+            logger.warning("[BERTClassifier] torch/transformers not installed — BERT disabled")
+            return
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            model_path, num_labels=2
-        )
-        self.model.to(self.device)
-        self.model.eval()
+        try:
+            if torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            elif torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            else:
+                self.device = torch.device("cpu")
+
+            if os.path.isdir(FINETUNED_PATH) and os.path.exists(os.path.join(FINETUNED_PATH, "config.json")):
+                model_path = FINETUNED_PATH
+                self._version = "BERT_FINETUNED_v1"
+            else:
+                model_path = FALLBACK_MODEL
+                self._version = "BERT_BASE"
+
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_path, num_labels=2
+            )
+            self.model.to(self.device)
+            self.model.eval()
+        except Exception as e:
+            logger.error(f"[BERTClassifier] Failed to load model: {e}. BERT disabled.")
+            self.model = None
+            self.tokenizer = None
+            self._version = "BERT_LOAD_FAILED"
 
     def predict(self, text: str) -> Dict[str, Any]:
+        if self.model is None or self.tokenizer is None:
+            return {"is_lead": False, "confidence": 0.0, "method": self._version}
+
         start = time.time()
 
         inputs = self.tokenizer(

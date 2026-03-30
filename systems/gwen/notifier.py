@@ -81,16 +81,21 @@ class SupervisorNotifier:
             # Проверка на дубль
             if contact_link and contact_link != "Не найден":
                 import sqlite3
-                conn = sqlite3.connect(str(settings.VACANCY_DB_PATH))
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT COUNT(*) FROM vacancies "
-                    "WHERE contact_link = ? AND response IS NOT NULL AND response != '' AND hash != ?",
-                    (contact_link, v_hash)
-                )
-                if cursor.fetchone()[0] > 0:
-                    status = "👯 ДУБЛИКАТ (Ранее уже писали)"
-                conn.close()
+                try:
+                    conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=10)
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM vacancies "
+                            "WHERE contact_link = ? AND response IS NOT NULL AND response != '' AND hash != ?",
+                            (contact_link, v_hash)
+                        )
+                        if cursor.fetchone()[0] > 0:
+                            status = "👯 ДУБЛИКАТ (Ранее уже писали)"
+                    finally:
+                        conn.close()
+                except Exception as db_err:
+                    logger.warning(f"notify_new_vacancy: dup check failed: {db_err}")
 
             if vacancy.get('rejection_reason') == 'HISTORICAL_LOAD_2024_2026':
                 status = "🕰️ ИСТОРИЧЕСКИЙ ЛИД (Гвен видела это в 2024-2025)"
@@ -138,8 +143,8 @@ class SupervisorNotifier:
             text = (
                 f"🧠 <b>ГВЕН ЗАБЛОКИРОВАЛА СООБЩЕНИЕ</b>\n\n"
                 f"<b>Получатель:</b> {entity}\n"
-                f"<b>Причина:</b> {verdict['reason']}\n"
-                f"<b>Уверенность:</b> {verdict['confidence'] * 100:.0f}%\n\n"
+                f"<b>Причина:</b> {verdict.get('reason', '—')}\n"
+                f"<b>Уверенность:</b> {verdict.get('confidence', 0) * 100:.0f}%\n\n"
                 f"<b>Текст:</b>\n<code>{self._escape_html(message[:500])}</code>"
             )
             await self._broadcast({"text": text, "parse_mode": "HTML"})
