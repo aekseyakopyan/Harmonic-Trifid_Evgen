@@ -2,7 +2,7 @@ import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, cast, String
 from core.database.connection import async_session
 from core.database.models import Lead, MessageLog
 from core.ai_engine.llm_client import llm_client
@@ -112,7 +112,7 @@ async def run_automated_outreach(client: Client):
                             lead_stmt = select(Lead).where(
                                 or_(
                                     Lead.username == clean_recipient,
-                                    Lead.telegram_id.cast(Lead.telegram_id.type.__class__) == clean_recipient
+                                    cast(Lead.telegram_id, String) == clean_recipient
                                 )
                             )
                             l_result = await session.execute(lead_stmt)

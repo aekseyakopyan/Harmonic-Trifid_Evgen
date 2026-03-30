@@ -102,7 +102,7 @@ export default function LeadCardPage() {
             </div>
             <div>
               <p className="text-muted text-xs mb-1">Скор</p>
-              <p className="font-mono">{lead.lead_score.toFixed(1)}</p>
+              <p className="font-mono">{(lead.lead_score ?? 0).toFixed(1)}</p>
             </div>
             <div>
               <p className="text-muted text-xs mb-1">Pipeline stage</p>
