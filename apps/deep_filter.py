@@ -137,7 +137,8 @@ async def filter_leads_batch(limit=None):
                                 text = next((l[1] for l in batch if l[0] == d_id), "N/A")
                                 df.write(f"--- ID: {d_id} | Reason: {res.get('reason')} | Marker: {res.get('marker')} ---\n{text}\n")
                 
-                cursor.execute(f"DELETE FROM all_historical_leads WHERE id IN ({','.join(map(str, ids_to_delete))})")
+                placeholders = ','.join('?' * len(ids_to_delete))
+                cursor.execute(f"DELETE FROM all_historical_leads WHERE id IN ({placeholders})", ids_to_delete)
             
             conn.commit()
 

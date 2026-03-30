@@ -620,7 +620,7 @@ async def _llm_retry_after(client: Client, sender_id: int, delay: int = 300):
     if not retry_data:
         return  # Пользователь написал снова — буфер уже обработан
 
-    logger.info(f"🔁 LLM retry #{retry_data['attempt']} для {sender_id}")
+    logger.info(f"🔁 LLM retry #{retry_data.get('attempt', '?')} для {sender_id}")
     try:
         await process_full_thought(
             client=client,
