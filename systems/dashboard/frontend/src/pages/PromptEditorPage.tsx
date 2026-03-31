@@ -156,7 +156,7 @@ export default function PromptEditorPage() {
                   </button>
                 </div>
                 <p className="text-xs text-muted">{v.created_at.slice(0, 16)}</p>
-                <p className="text-xs text-muted mt-1 line-clamp-3">{v.content.slice(0, 80)}...</p>
+                <p className="text-xs text-muted mt-1 line-clamp-3">{v.content.length > 80 ? v.content.slice(0, 80) + '...' : v.content}</p>
               </div>
             ))}
           </div>

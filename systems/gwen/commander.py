@@ -347,7 +347,10 @@ class GwenCommander:
                                                 # Если контактировали менее 14 дней назад — пропускаем
                                                 last_out = next((m for m in all_messages if m.direction == "outgoing"), None)
                                                 if last_out and last_out.created_at:
-                                                    days_since = (datetime.utcnow() - last_out.created_at).days
+                                                    _last_created = last_out.created_at
+                                if _last_created.tzinfo is None:
+                                    _last_created = _last_created.replace(tzinfo=timezone.utc)
+                                days_since = (datetime.now(timezone.utc) - _last_created).days
                                                     if days_since < 14:
                                                         logger.info(f"⏭ Пропуск: {target} уже получил отклик {days_since} дн. назад")
                                                         is_duplicate = True
@@ -520,15 +523,14 @@ class GwenCommander:
                                 await supervisor_notifier.send_error(f"❌ @{_login} | {_dir} | {_req} | {str(e)[:80]}")
                             except Exception:
                                 pass
+                            continue  # auto-mode failed — do NOT fall through to manual-mode notify
+                    else:
                         # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
 
                         # Помечаем как "уведомлен"
-                        conn = sqlite3.connect(str(settings.VACANCY_DB_PATH), timeout=30)
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
-                        conn.commit()
-                        conn.close()
+                        with vacancy_db() as conn:
+                            conn.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
                         await asyncio.sleep(2)
                     
             except Exception as e:
@@ -1110,8 +1112,11 @@ class GwenCommander:
                     # Проверка на старость
                     is_old = False
                     try:
-                        cursor.execute("SELECT last_seen, direction FROM vacancies WHERE hash = ?", (v_hash,))
-                        ls_row = cursor.fetchone()
+                        # Open a fresh connection — the earlier conn/cursor were closed in finally above
+                        with vacancy_db() as _age_conn:
+                            ls_row = _age_conn.execute(
+                                "SELECT last_seen, direction FROM vacancies WHERE hash = ?", (v_hash,)
+                            ).fetchone()
                         if ls_row:
                             last_seen, v_dir = ls_row
                             dt = dateutil.parser.isoparse(last_seen)

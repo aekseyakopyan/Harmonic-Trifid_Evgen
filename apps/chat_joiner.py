@@ -48,7 +48,14 @@ async def join_chat(client: Client, link: str) -> bool:
     except FloodWait as e:
         logger.warning(f"⚠️ Flood Wait! Нужно подождать {e.value} секунд.")
         await asyncio.sleep(e.value + 5)
-        return await join_chat(client, link)  # Рекурсивный повтор
+        # Iterative retry instead of recursion to avoid RecursionError on repeated FloodWaits
+        try:
+            await client.join_chat(link)
+            logger.info(f"✅ Успешно вступил в: {link}")
+            return True
+        except Exception as retry_e:
+            logger.error(f"❌ Повторная попытка не удалась: {link}: {retry_e}")
+            return False
 
     except UserAlreadyParticipant:
         logger.info(f"ℹ️ Уже состоим в этом чате: {link}")

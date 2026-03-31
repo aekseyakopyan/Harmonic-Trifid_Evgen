@@ -351,7 +351,8 @@ async def restart_service(service: str = Query("alexey", enum=["alexey"])):
                 env=env, cwd=project_root,
                 start_new_session=True
             )
-        # Save PID
+        # Save PID (ensure parent directory exists)
+        Path(svc["pid"]).parent.mkdir(parents=True, exist_ok=True)
         Path(svc["pid"]).write_text(str(proc.pid))
 
         return {

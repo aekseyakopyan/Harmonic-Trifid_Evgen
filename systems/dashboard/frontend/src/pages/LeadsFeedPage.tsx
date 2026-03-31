@@ -20,15 +20,16 @@ function TierBadge({ tier }: { tier: string | null }) {
   return <span className="badge-cold">{tier}</span>
 }
 
-function ScoreBar({ score }: { score: number }) {
-  const pct = Math.min(100, Math.max(0, score))
+function ScoreBar({ score }: { score: number | null }) {
+  const s = score ?? 0
+  const pct = Math.min(100, Math.max(0, s))
   const color = pct >= 70 ? 'bg-red-500' : pct >= 40 ? 'bg-amber-500' : 'bg-blue-500'
   return (
     <div className="flex items-center gap-2">
       <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden">
         <div className={clsx('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs text-muted">{score.toFixed(0)}</span>
+      <span className="text-xs text-muted">{s.toFixed(0)}</span>
     </div>
   )
 }

@@ -23,21 +23,24 @@ class BacklogMonitor:
         client = TelegramClient('backlog_monitor', settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
         await client.start(bot_token=self.bot_token)
 
-        while True:
-            try:
-                if self.has_pending_tasks():
-                    msg = (
-                        "📂 <b>Напоминание от Гвен:</b>\n"
-                        "В <code>backlog.md</code> есть невыполненные задачи для Антигравити.\n"
-                        "Не забудьте запустить агента в IDE!"
-                    )
-                    await client.send_message(self.chat_id, msg, parse_mode='html')
-                    logger.info("Sent backlog reminder.")
-                
-            except Exception as e:
-                logger.error(f"Backlog monitor error: {e}")
+        try:
+            while True:
+                try:
+                    if self.has_pending_tasks():
+                        msg = (
+                            "📂 <b>Напоминание от Гвен:</b>\n"
+                            "В <code>backlog.md</code> есть невыполненные задачи для Антигравити.\n"
+                            "Не забудьте запустить агента в IDE!"
+                        )
+                        await client.send_message(self.chat_id, msg, parse_mode='html')
+                        logger.info("Sent backlog reminder.")
 
-            await asyncio.sleep(self.interval)
+                except Exception as e:
+                    logger.error(f"Backlog monitor error: {e}")
+
+                await asyncio.sleep(self.interval)
+        finally:
+            await client.disconnect()
 
     def has_pending_tasks(self) -> bool:
         """Проверяет наличие '[ ]' в файле."""

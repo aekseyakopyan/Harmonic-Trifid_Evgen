@@ -125,6 +125,13 @@ class MLLeadClassifier:
         """Загружает модель."""
         if not os.path.exists(path):
             return
+        # Validate the path is inside the expected directory to prevent loading
+        # a maliciously placed pickle from an arbitrary location
+        resolved = os.path.realpath(path)
+        expected_dir = os.path.realpath(os.path.dirname(self.model_path) or os.getcwd())
+        if not resolved.startswith(expected_dir):
+            print(f"[MLClassifier] Rejected load from unexpected path: {path}")
+            return
         try:
             with open(path, 'rb') as f:
                 data = pickle.load(f)

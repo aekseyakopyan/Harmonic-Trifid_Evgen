@@ -14,6 +14,10 @@ def setup_structured_logger(name: str):
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # Конфигурация structlog
+    # Use logging.FileHandler so the file is properly managed and closed on shutdown
+    log_file = log_dir / "leads.json"
+    file_handler = logging.FileHandler(str(log_file), mode="a", encoding="utf-8")
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -22,9 +26,7 @@ def setup_structured_logger(name: str):
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.JSONRenderer()
         ],
-        logger_factory=structlog.WriteLoggerFactory(
-            file=(log_dir / "leads.json").open("a")
-        ),
+        logger_factory=structlog.PrintLoggerFactory(file=file_handler.stream),
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         cache_logger_on_first_use=True,
     )

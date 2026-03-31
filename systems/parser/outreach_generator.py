@@ -14,7 +14,9 @@ class OutreachGenerator:
     """Генератор откликов на основе ИИ."""
 
     # Ротация кейсов: key = direction, value = кольцевой счётчик
+    # Protected by _case_lock to prevent race conditions under concurrent async calls
     _case_counter: dict = {}
+    _case_lock = asyncio.Lock()
 
     # Кейсы по направлениям для ротации (ключевые слова из SYSTEM_PROMPT)
     _CASES_BY_DIR = {
@@ -66,9 +68,15 @@ class OutreachGenerator:
         if not cases:
             return ""
 
+        # Note: _get_rotated_case_hint is called from async context; protect counter with lock
         idx = self._case_counter.get(dir_key, 0) % len(cases)
         self._case_counter[dir_key] = idx + 1
         return cases[idx]
+
+    async def _get_rotated_case_hint_async(self, direction: str) -> str:
+        """Async-safe wrapper for case rotation (prevents race conditions)."""
+        async with self._case_lock:
+            return self._get_rotated_case_hint(direction)
 
     SYSTEM_PROMPT = """
 Ты — Алексей, опытный маркетолог-фрилансер. Пишешь потенциальному клиенту, который разместил заказ или вакансию на услугу.
