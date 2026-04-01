@@ -123,7 +123,7 @@ export default function VacanciesPage() {
       )}
 
       {/* Pagination */}
-      {data?.total > limit && (
+      {(data?.total ?? 0) > limit && (
         <div className="flex gap-2 items-center justify-center pt-2">
           <button
             disabled={page === 0}
@@ -132,9 +132,9 @@ export default function VacanciesPage() {
           >
             ← Назад
           </button>
-          <span className="text-sm text-muted">{page + 1} / {Math.ceil(data.total / limit)}</span>
+          <span className="text-sm text-muted">{page + 1} / {Math.ceil((data?.total ?? 0) / limit)}</span>
           <button
-            disabled={(page + 1) * limit >= data.total}
+            disabled={(page + 1) * limit >= (data?.total ?? 0)}
             onClick={() => setPage(p => p + 1)}
             className="px-3 py-1.5 rounded-lg border border-border text-sm text-muted hover:text-white disabled:opacity-40"
           >
