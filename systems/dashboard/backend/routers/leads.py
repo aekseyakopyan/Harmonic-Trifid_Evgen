@@ -211,6 +211,101 @@ async def lead_vacancies(lead_id: int):
         return []
 
 
+def _analyze_spam_reason(username: str, vacancy_text: str) -> str:
+    combined = ((vacancy_text or "") + " " + (username or "")).lower()
+    patterns = [
+        (["вакансия здесь размещена", "вакансии здесь размещены", "vakansii", "vakansii_rabota"], "Авто-бот биржи вакансий"),
+        (["работодром", "vergiliyrd", "workdrom"], "Бот биржи труда"),
+        (["freelance_rabota", "если вам нужен фриланс"], "Фриланс-биржа бот"),
+        (["нужны авторы отзывов", "250 ₽ за каждый", "плати за отзыв"], "Накрутка отзывов"),
+        (["bitcoin", "binance", "usdt", "крипто", "трейдинг", "инвестиц"], "Крипто/финансы"),
+        (["неизвестная команда", "доступные команды:", "login code:", "😬"], "Системное сообщение бота"),
+        (["getassistant", "marina_get"], "Сервис GetAssistant"),
+        (["parser_lab"], "Сервис парсинга"),
+        (["mailsphere"], "Сервис email-рассылок"),
+        (["#дизайнер", "ищем дизайнера", "нужен дизайнер", "ux/ui", "ui/ux"], "Ищут дизайнера"),
+        (["видеограф", "#видеограф", "видеомонтаж", "монтажёр"], "Видео/монтаж"),
+        (["#smm", " smm ", "ведение соцсетей", "контент-план"], "SMM"),
+        (["#копирайтер", "написание текстов", "копирайтинг"], "Копирайтинг"),
+        (["1с ", "1с-программист", "программист 1с"], "1С / разработка"),
+    ]
+    for keywords, reason in patterns:
+        if any(kw in combined for kw in keywords):
+            return reason
+    return "Нерелевантный запрос"
+
+
+@router.get("/{lead_id}/draft")
+async def get_lead_draft(lead_id: int):
+    """Получить черновик отклика из vacancies.db."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT username FROM leads WHERE id = ?", [lead_id])
+    if not rows:
+        raise HTTPException(404, "Lead not found")
+    username = dict(rows[0]).get("username")
+    if not username or not os.path.exists(VACANCIES_DB_PATH):
+        return {"draft": None}
+
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as vdb:
+        vdb.row_factory = aiosqlite.Row
+        rows2 = await vdb.execute_fetchall(
+            """SELECT draft_response FROM vacancies
+               WHERE contact_link LIKE ? AND status='accepted' AND draft_response IS NOT NULL
+               ORDER BY last_seen DESC LIMIT 1""",
+            [f"%{username}%"],
+        )
+    return {"draft": dict(rows2[0])["draft_response"] if rows2 else None}
+
+
+@router.post("/{lead_id}/queue_outreach")
+async def queue_outreach(lead_id: int):
+    """Пометить лид как 'в работе' (contacted)."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT id FROM leads WHERE id = ?", [lead_id])
+        if not rows:
+            raise HTTPException(404, "Lead not found")
+        await db.execute(
+            "UPDATE leads SET status='contacted', last_outreach_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
+            [lead_id],
+        )
+        await db.execute("INSERT INTO audit_log(action,entity_type,entity_id) VALUES(?,?,?)", ["queue_outreach", "lead", lead_id])
+        await db.commit()
+    await manager.broadcast("leads", {"event": "lead_updated", "id": lead_id})
+    return {"ok": True}
+
+
+@router.post("/{lead_id}/mark_spam")
+async def mark_spam(lead_id: int):
+    """Архивировать лид как спам, занести username в чёрный список."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT * FROM leads WHERE id = ?", [lead_id])
+        if not rows:
+            raise HTTPException(404, "Lead not found")
+        lead = dict(rows[0])
+        reason = _analyze_spam_reason(lead.get("username", ""), lead.get("vacancy_text", "") or "")
+
+        await db.execute(
+            "UPDATE leads SET is_archived=1, status='spam', updated_at=datetime('now') WHERE id=?",
+            [lead_id],
+        )
+        username = lead.get("username")
+        if username:
+            try:
+                await db.execute(
+                    "INSERT OR IGNORE INTO pipeline_blacklist(type, value) VALUES('word', ?)",
+                    [username.lower()],
+                )
+            except Exception:
+                pass
+        await db.execute(
+            "INSERT INTO audit_log(action,entity_type,entity_id,new_value) VALUES(?,?,?,?)",
+            ["mark_spam", "lead", lead_id, reason],
+        )
+        await db.commit()
+    await manager.broadcast("leads", {"event": "lead_archived", "id": lead_id})
+    return {"ok": True, "reason": reason, "username": username}
+
+
 @router.get("/{lead_id}/history")
 async def lead_history(lead_id: int):
     async with get_db() as db:

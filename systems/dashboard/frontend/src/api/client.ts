@@ -17,6 +17,9 @@ export const leadsApi = {
     api.post('/leads/bulk', lead_ids, { params: { action, value } }),
   export: (params?: Record<string, unknown>) =>
     api.post('/leads/export', {}, { params, responseType: 'blob' }),
+  draft: (id: number) => api.get<{ draft: string | null }>(`/leads/${id}/draft`),
+  queueOutreach: (id: number) => api.post(`/leads/${id}/queue_outreach`),
+  markSpam: (id: number) => api.post<{ ok: boolean; reason: string; username: string }>(`/leads/${id}/mark_spam`),
 }
 
 // Dialogs

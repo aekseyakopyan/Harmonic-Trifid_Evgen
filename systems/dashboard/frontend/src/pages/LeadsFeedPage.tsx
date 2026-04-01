@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { leadsApi } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Lead } from '../types'
-import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X } from 'lucide-react'
+import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X, MessageSquare, Ban, Copy, Check } from 'lucide-react'
 import clsx from 'clsx'
 import { formatDistanceToNow } from 'date-fns'
 import { ru } from 'date-fns/locale'
@@ -76,6 +76,51 @@ function QuickTierButtons({ leadId, currentTier, onDone }: { leadId: number; cur
   )
 }
 
+function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard.writeText(draft)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div className="bg-card border border-border rounded-xl p-5 max-w-lg w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold">Написать {lead.full_name || `@${lead.username}`}</h3>
+            {lead.niche && <p className="text-xs text-muted mt-0.5">{lead.niche} · {lead.source_channel}</p>}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-white"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="bg-surface rounded-lg p-3 text-sm text-white/80 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto border border-border/50">
+          {draft}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={copy}
+            className={clsx('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
+              copied ? 'border-green-500/40 text-green-400 bg-green-500/10' : 'border-border text-muted hover:text-white hover:border-white/20'
+            )}
+          >
+            {copied ? <><Check className="w-3.5 h-3.5" /> Скопировано</> : <><Copy className="w-3.5 h-3.5" /> Скопировать</>}
+          </button>
+          {lead.username && (
+            <a
+              href={`https://t.me/${lead.username}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+            >
+              <MessageSquare className="w-3.5 h-3.5" /> Открыть в Telegram
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function LeadsFeedPage() {
   const [search, setSearch] = useState('')
   const [tier, setTier] = useState('')
@@ -85,7 +130,33 @@ export default function LeadsFeedPage() {
   const [archived, setArchived] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [hoverRow, setHoverRow] = useState<number | null>(null)
+  const [draftModal, setDraftModal] = useState<{ lead: Lead; draft: string } | null>(null)
+  const [spamToast, setSpamToast] = useState<string | null>(null)
   const qc = useQueryClient()
+
+  const spamMutation = useMutation({
+    mutationFn: (lead: Lead) => leadsApi.markSpam(lead.id),
+    onSuccess: (res) => {
+      const { reason, username } = res.data
+      setSpamToast(`@${username} → ${reason}`)
+      setTimeout(() => setSpamToast(null), 5000)
+      qc.invalidateQueries({ queryKey: ['leads'] })
+    },
+  })
+
+  const writeMutation = useMutation({
+    mutationFn: async (lead: Lead) => {
+      const [draftRes] = await Promise.all([
+        leadsApi.draft(lead.id),
+        leadsApi.queueOutreach(lead.id),
+      ])
+      return { lead, draft: draftRes.data.draft || 'Черновик не найден — напиши вручную' }
+    },
+    onSuccess: ({ lead, draft }) => {
+      setDraftModal({ lead, draft })
+      qc.invalidateQueries({ queryKey: ['leads'] })
+    },
+  })
 
   const { data, isLoading } = useQuery({
     queryKey: ['leads', search, tier, status, archived, page, qualFilter],
@@ -341,7 +412,29 @@ export default function LeadsFeedPage() {
                       : '—'}
                   </td>
                   <td className="px-3 py-3">
-                    <Link to={`/leads/${lead.id}`} className="btn-ghost p-1 text-xs">→</Link>
+                    <div className="flex items-center gap-0.5 justify-end">
+                      {hoverRow === lead.id && (
+                        <>
+                          <button
+                            title="Написать лиду"
+                            onClick={e => { e.preventDefault(); writeMutation.mutate(lead) }}
+                            disabled={writeMutation.isPending}
+                            className="p-1.5 rounded text-muted hover:text-green-400 hover:bg-green-500/10 transition-colors"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            title="Это спам"
+                            onClick={e => { e.preventDefault(); spamMutation.mutate(lead) }}
+                            disabled={spamMutation.isPending}
+                            className="p-1.5 rounded text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+                      <Link to={`/leads/${lead.id}`} className="p-1.5 rounded text-muted hover:text-white transition-colors text-xs">→</Link>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -349,6 +442,24 @@ export default function LeadsFeedPage() {
           </table>
         </div>
       </div>
+
+      {/* Spam toast */}
+      {spamToast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-950/90 border border-red-500/40 text-white text-sm shadow-lg">
+          <Ban className="w-4 h-4 text-red-400 shrink-0" />
+          <span>Заблокировано: {spamToast}</span>
+          <button onClick={() => setSpamToast(null)} className="ml-2 text-white/50 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
+
+      {/* Draft modal */}
+      {draftModal && (
+        <DraftModal
+          lead={draftModal.lead}
+          draft={draftModal.draft}
+          onClose={() => setDraftModal(null)}
+        />
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (
