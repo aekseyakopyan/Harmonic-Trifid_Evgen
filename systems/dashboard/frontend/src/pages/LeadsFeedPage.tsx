@@ -297,10 +297,15 @@ export default function LeadsFeedPage() {
                         : <Square className="w-4 h-4" />}
                     </button>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 max-w-xs">
                     <Link to={`/leads/${lead.id}`} className="hover:text-accent transition-colors">
                       <div className="font-medium whitespace-nowrap">{lead.full_name || `#${lead.id}`}</div>
                       {lead.username && <div className="text-xs text-muted">@{lead.username}</div>}
+                      {lead.vacancy_text && (
+                        <div className="text-xs text-white/40 mt-0.5 line-clamp-2 max-w-[280px] leading-relaxed">
+                          {lead.vacancy_text}
+                        </div>
+                      )}
                     </Link>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">

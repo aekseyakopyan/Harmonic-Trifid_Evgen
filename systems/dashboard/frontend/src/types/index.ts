@@ -17,6 +17,7 @@ export interface Lead {
   qual_score: number | null
   fit_score: number | null
   qual_notes: string | null
+  vacancy_text: string | null
 }
 
 export interface Dialog {
