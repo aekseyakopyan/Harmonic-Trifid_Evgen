@@ -35,12 +35,13 @@ export default function VacanciesPage() {
         })
         .then(r => r.data),
     placeholderData: (prev) => prev,
+    refetchInterval: 15000,
   })
 
   const { data: stats } = useQuery({
     queryKey: ['vacancies-stats'],
     queryFn: () => axios.get('/api/vacancies/stats').then(r => r.data),
-    refetchInterval: 30000,
+    refetchInterval: 15000,
   })
 
   return (
