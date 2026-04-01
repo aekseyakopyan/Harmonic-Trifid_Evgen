@@ -369,15 +369,33 @@ export default function LeadsFeedPage() {
                     </button>
                   </td>
                   <td className="px-4 py-3 max-w-xs">
-                    <Link to={`/leads/${lead.id}`} className="hover:text-accent transition-colors">
+                    <Link to={`/leads/${lead.id}`} className="hover:text-accent transition-colors block">
                       <div className="font-medium whitespace-nowrap">{lead.full_name || `#${lead.id}`}</div>
-                      {lead.username && <div className="text-xs text-muted">@{lead.username}</div>}
-                      {lead.vacancy_text && (
-                        <div className="text-xs text-white/40 mt-0.5 line-clamp-2 max-w-[280px] leading-relaxed">
-                          {lead.vacancy_text}
-                        </div>
-                      )}
                     </Link>
+                    <div className="flex items-center gap-1 mt-0.5">
+                      {lead.username && <span className="text-xs text-muted">@{lead.username}</span>}
+                      <button
+                        title="Написать лиду"
+                        onClick={e => { e.preventDefault(); writeMutation.mutate(lead) }}
+                        disabled={writeMutation.isPending}
+                        className="p-0.5 rounded text-muted hover:text-green-400 hover:bg-green-500/10 transition-colors"
+                      >
+                        <MessageSquare className="w-3 h-3" />
+                      </button>
+                      <button
+                        title="Это спам"
+                        onClick={e => { e.preventDefault(); spamMutation.mutate(lead) }}
+                        disabled={spamMutation.isPending}
+                        className="p-0.5 rounded text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <Ban className="w-3 h-3" />
+                      </button>
+                    </div>
+                    {lead.vacancy_text && (
+                      <div className="text-xs text-white/40 mt-1 max-w-[320px] leading-relaxed">
+                        {lead.vacancy_text}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     {hoverRow === lead.id
@@ -413,26 +431,6 @@ export default function LeadsFeedPage() {
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-0.5 justify-end">
-                      {hoverRow === lead.id && (
-                        <>
-                          <button
-                            title="Написать лиду"
-                            onClick={e => { e.preventDefault(); writeMutation.mutate(lead) }}
-                            disabled={writeMutation.isPending}
-                            className="p-1.5 rounded text-muted hover:text-green-400 hover:bg-green-500/10 transition-colors"
-                          >
-                            <MessageSquare className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            title="Это спам"
-                            onClick={e => { e.preventDefault(); spamMutation.mutate(lead) }}
-                            disabled={spamMutation.isPending}
-                            className="p-1.5 rounded text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                          >
-                            <Ban className="w-3.5 h-3.5" />
-                          </button>
-                        </>
-                      )}
                       <Link to={`/leads/${lead.id}`} className="p-1.5 rounded text-muted hover:text-white transition-colors text-xs">→</Link>
                     </div>
                   </td>

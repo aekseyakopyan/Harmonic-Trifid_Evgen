@@ -211,6 +211,27 @@ async def lead_vacancies(lead_id: int):
         return []
 
 
+_FILTER_EXPECTED_PATTERNS = [
+    "вакансия здесь размещена", "вакансии здесь размещены", "vakansii", "freelance_rabota",
+    "нужны авторы отзывов", "bitcoin", "binance", "usdt", "крипто", "трейдинг",
+    "неизвестная команда", "доступные команды", "login code",
+    "ищу дизайнера", "нужен дизайнер", "ищем дизайнера", "#дизайнер",
+    "ищу копирайтера", "ищем копирайтера", "#копирайтер",
+    "ищу smm", "ищем smm", "#smm", "ведение соцсетей",
+    "ищу программиста", "ищем программиста", "нужен программист",
+    "принимаю заказы", "я фрилансер", "я дизайнер", "я копирайтер", "я разработчик",
+    "ищу сотрудника", "ищу менеджера", "нужен менеджер по продажам",
+    "продам аккаунт", "продам базу", "куплю аккаунт",
+]
+
+
+def _gap_analysis(vacancy_text: str, username: str) -> list[str]:
+    """Возвращает паттерны которые ДОЛЖНЫ были заблокировать этот лид."""
+    combined = ((vacancy_text or "") + " " + (username or "")).lower()
+    missed = [p for p in _FILTER_EXPECTED_PATTERNS if p in combined]
+    return missed
+
+
 def _analyze_spam_reason(username: str, vacancy_text: str) -> str:
     combined = ((vacancy_text or "") + " " + (username or "")).lower()
     patterns = [
@@ -261,14 +282,19 @@ async def get_lead_draft(lead_id: int):
 async def queue_outreach(lead_id: int):
     """Пометить лид как 'в работе' (contacted)."""
     async with get_db() as db:
-        rows = await db.execute_fetchall("SELECT id FROM leads WHERE id = ?", [lead_id])
+        rows = await db.execute_fetchall("SELECT * FROM leads WHERE id = ?", [lead_id])
         if not rows:
             raise HTTPException(404, "Lead not found")
+        lead = dict(rows[0])
         await db.execute(
             "UPDATE leads SET status='contacted', last_outreach_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
             [lead_id],
         )
         await db.execute("INSERT INTO audit_log(action,entity_type,entity_id) VALUES(?,?,?)", ["queue_outreach", "lead", lead_id])
+        await db.execute(
+            "INSERT INTO lead_feedback(lead_id, action, niche, vacancy_text) VALUES(?,?,?,?)",
+            [lead_id, "wrote", lead.get("niche"), lead.get("vacancy_text")],
+        )
         await db.commit()
     await manager.broadcast("leads", {"event": "lead_updated", "id": lead_id})
     return {"ok": True}
@@ -297,9 +323,14 @@ async def mark_spam(lead_id: int):
                 )
             except Exception:
                 pass
+        gap = _gap_analysis(lead.get("vacancy_text", ""), lead.get("username", ""))
         await db.execute(
             "INSERT INTO audit_log(action,entity_type,entity_id,new_value) VALUES(?,?,?,?)",
             ["mark_spam", "lead", lead_id, reason],
+        )
+        await db.execute(
+            "INSERT INTO lead_feedback(lead_id, action, spam_reason, gap_analysis, niche, vacancy_text) VALUES(?,?,?,?,?,?)",
+            [lead_id, "spam", reason, json.dumps(gap, ensure_ascii=False), lead.get("niche"), lead.get("vacancy_text")],
         )
         await db.commit()
     await manager.broadcast("leads", {"event": "lead_archived", "id": lead_id})

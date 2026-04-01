@@ -26,6 +26,24 @@ interface Toast {
   type: 'hot' | 'info'
 }
 
+function MoscowClock() {
+  const [time, setTime] = useState(() => {
+    return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  })
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTime(new Date().toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', second: '2-digit' }))
+    }, 1000)
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div className="px-3 py-2 border-t border-border">
+      <div className="text-xs text-muted">Москва</div>
+      <div className="font-mono text-sm text-white/80 tracking-wider">{time}</div>
+    </div>
+  )
+}
+
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -91,6 +109,7 @@ export default function Layout() {
           </NavLink>
         ))}
       </nav>
+      <MoscowClock />
       <div className="p-3 border-t border-border">
         <a
           href="http://localhost:8001/docs"
