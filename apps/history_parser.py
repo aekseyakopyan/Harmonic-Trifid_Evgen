@@ -9,7 +9,6 @@ import sqlite3
 import hashlib
 from datetime import datetime, timedelta, timezone
 from pyrogram import Client
-from pyrogram.types import MessageEntityTextUrl
 from dotenv import load_dotenv
 
 import sys
