@@ -23,6 +23,7 @@ class LeadOut(BaseModel):
     qual_score: Optional[int] = None   # 1-5: насколько лид целевой
     fit_score: Optional[int] = None    # 1-5: насколько нам подходит
     qual_notes: Optional[str] = None   # произвольные заметки
+    vacancy_text: Optional[str] = None # текст исходной вакансии
 
 
 class LeadPatch(BaseModel):
