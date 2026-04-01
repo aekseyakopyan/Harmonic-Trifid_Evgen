@@ -38,7 +38,7 @@ const STATUS_OPTIONS = ['new', 'contacted', 'qualified', 'lost']
 
 export default function LeadCardPage() {
   const { id } = useParams<{ id: string }>()
-  const leadId = Number(id)
+  const leadId = id ? Number(id) : 0
   const qc = useQueryClient()
   const navigate = useNavigate()
 
@@ -157,7 +157,7 @@ export default function LeadCardPage() {
             </div>
             <div>
               <p className="text-muted text-xs mb-1">Скор</p>
-              <p className="font-mono">{lead.lead_score.toFixed(1)}</p>
+              <p className="font-mono">{(lead.lead_score ?? 0).toFixed(1)}</p>
             </div>
             <div>
               <p className="text-muted text-xs mb-1">Pipeline stage</p>

@@ -12,7 +12,71 @@ from core.config.settings import settings
 
 class OutreachGenerator:
     """Генератор откликов на основе ИИ."""
-    
+
+    # Ротация кейсов: key = direction, value = кольцевой счётчик
+    # Protected by _case_lock to prevent race conditions under concurrent async calls
+    _case_counter: dict = {}
+    _case_lock = asyncio.Lock()
+
+    # Кейсы по направлениям для ротации (ключевые слова из SYSTEM_PROMPT)
+    _CASES_BY_DIR = {
+        "таргет вк": [
+            "отель 5* (Ялта): лиды 300-4000₽ (поиск + ВК)",
+            "остекление балконов (Краснодар): заявки от 450₽, таргет ВК",
+        ],
+        "контекстная реклама": [
+            "застройщик ЖК (СПб): CPL с 5000₽ до 1000-2500₽",
+            "строительство домов (Крым): 250-400 заявок/мес по 2000₽",
+            "студия ресниц (Москва): 115 лидов по 121₽ (KPI 200₽)",
+            "детейлинг-центр (Тюмень): 43 заявки/мес по 500₽",
+            "магазин автомобильных чехлов: 1996 заявок по 412₽",
+            "банкротство физлиц: лиды от 120₽",
+            "диваны премиум (Ростов): выручка ×28 за 10 мес",
+            "металлопрокат: +545% заявок после запуска Директа",
+            "контрактная косметика: CPL с 2000₽ до 300-400₽ за 3 нед",
+        ],
+        "seo": [
+            "аренда генераторов (B2B, СПб): трафик ×12 за 12 мес",
+            "дизельное топливо (B2B): +62% трафика за 1 год",
+            "онлайн-психология: +1063% трафика за 9 мес",
+            "промхимия (B2B): 289 запросов в ТОП, +56% видимости",
+        ],
+        "авито": [],
+        "разработка сайтов": [
+            "лендинг на Tilda для туристического объекта",
+            "сайт медицинской клиники (полный цикл)",
+            "сайт службы такси с фирменным персонажем",
+            "интернет-каталог климатического оборудования B2B",
+        ],
+    }
+
+    def _get_rotated_case_hint(self, direction: str) -> str:
+        """Возвращает ключевой кейс для ротации, чтобы каждый отклик использовал другой."""
+        d = direction.lower()
+        dir_key = "контекстная реклама"
+        if any(k in d for k in ["вк", "вконтакте", "таргет", "mytarget"]):
+            dir_key = "таргет вк"
+        elif any(k in d for k in ["seo", "поисков", "органик"]):
+            dir_key = "seo"
+        elif any(k in d for k in ["авито"]):
+            dir_key = "авито"
+        elif any(k in d for k in ["сайт", "tilda", "tilde", "разработ"]):
+            dir_key = "разработка сайтов"
+
+        cases = self._CASES_BY_DIR.get(dir_key, [])
+        if not cases:
+            return ""
+
+        idx = self._case_counter.get(dir_key, 0) % len(cases)
+        self._case_counter[dir_key] = idx + 1
+        return cases[idx]
+
+    async def _get_rotated_case_hint_async(self, direction: str) -> str:
+        """Async-safe wrapper for case rotation (prevents race conditions)."""
+        async with self._case_lock:
+            return self._get_rotated_case_hint(direction)
+
+
     SYSTEM_PROMPT = """
 Ты — Алексей, опытный маркетолог-фрилансер. Пишешь потенциальному клиенту, который разместил заказ или вакансию на услугу.
 

@@ -368,16 +368,37 @@ class GwenCommander:
                                             MessageLog.intent == "outreach"
                                         ).order_by(MessageLog.created_at.desc()).limit(10)
                                         res_msgs = await session.execute(stmt_msgs)
-                                        past_messages = res_msgs.scalars().all()
-                                        
-                                        if past_messages:
-                                            detector = get_duplicate_detector()
-                                            for past_msg in past_messages:
-                                                similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
-                                                if similarity > 0.85:
-                                                    logger.info(f"⏭ Пропуск дубликата: Отклик в {target} слишком похож на предыдущий (sim={similarity:.2f})")
-                                                    is_duplicate = True
-                                                    break
+                                        all_messages = res_msgs.scalars().all()
+
+                                        if all_messages:
+                                            # Если человек уже ответил — активный диалог, не спамим
+                                            has_replied = any(m.direction == "incoming" for m in all_messages)
+                                            if has_replied:
+                                                logger.info(f"⏭ Пропуск активного диалога: {target} уже отвечал нам")
+                                                is_duplicate = True
+                                            else:
+                                                # Если контактировали менее 14 дней назад — пропускаем
+                                                last_out = next((m for m in all_messages if m.direction == "outgoing"), None)
+                                                if last_out and last_out.created_at:
+                                                    _last_created = last_out.created_at
+                                                    if _last_created.tzinfo is None:
+                                                        _last_created = _last_created.replace(tzinfo=timezone.utc)
+                                                    days_since = (datetime.now(timezone.utc) - _last_created).days
+                                                    if days_since < 14:
+                                                        logger.info(f"⏭ Пропуск: {target} уже получил отклик {days_since} дн. назад")
+                                                        is_duplicate = True
+
+                                                # Если черновик слишком похож на прошлые — тоже пропускаем
+                                                if not is_duplicate:
+                                                    past_outreach = [m for m in all_messages if m.direction == "outgoing" and m.intent == "outreach"]
+                                                    if past_outreach:
+                                                        detector = get_duplicate_detector()
+                                                        for past_msg in past_outreach:
+                                                            similarity = detector.calculate_semantic_similarity(v_draft, past_msg.content)
+                                                            if similarity > 0.85:
+                                                                logger.info(f"⏭ Пропуск дубликата: отклик для {target} похож на предыдущий (sim={similarity:.2f})")
+                                                                is_duplicate = True
+                                                                break
                             except Exception as check_err:
                                 logger.error(f"Error during duplicate outreach check: {check_err}")
 
@@ -521,6 +542,15 @@ class GwenCommander:
                                     conn.execute("UPDATE vacancies SET response = 'failed' WHERE hash = ?", (v_hash,))
                             except Exception as db_err:
                                 logger.error(f"Failed to mark lead as failed: {db_err}")
+                            try:
+                                _login = v_contact.split('/')[-1].replace('@', '').strip()
+                                _dir = v_dict.get('direction') or '—'
+                                _req = (v_dict.get('text') or '').replace('\n', ' ')[:120]
+                                await supervisor_notifier.send_error(f"❌ @{_login} | {_dir} | {_req} | {str(e)[:80]}")
+                            except Exception:
+                                pass
+                            continue  # auto-mode failed — do NOT fall through to manual-mode notify
+                    else:
                         # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
                         await supervisor_notifier.notify_new_vacancy(v_dict)
 
@@ -1072,8 +1102,11 @@ class GwenCommander:
                     # Проверка на старость
                     is_old = False
                     try:
-                        cursor.execute("SELECT last_seen, direction FROM vacancies WHERE hash = ?", (v_hash,))
-                        ls_row = cursor.fetchone()
+                        # Open a fresh connection — the earlier conn/cursor were closed in finally above
+                        with vacancy_db() as _age_conn:
+                            ls_row = _age_conn.execute(
+                                "SELECT last_seen, direction FROM vacancies WHERE hash = ?", (v_hash,)
+                            ).fetchone()
                         if ls_row:
                             last_seen, v_dir = ls_row
                             dt = dateutil.parser.isoparse(last_seen)

@@ -82,29 +82,30 @@ class GwenLearningEngine:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
-        # Начало сегодняшнего дня (00:00)
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Берем все одобренные за сегодня
-        cursor.execute("SELECT text FROM vacancies WHERE status = 'accepted' AND last_seen >= ?", (today_start,))
-        accepted = [row['text'] for row in cursor.fetchall()]
-        
-        # Берем все отклоненные (мусор) за сегодня
-        cursor.execute("SELECT text FROM vacancies WHERE status = 'rejected' AND last_seen >= ?", (today_start,))
-        rejected = [row['text'] for row in cursor.fetchall()]
-        
-        # Если за сегодня данных мало (например, утро), добираем последние 20 штук для контекста
-        if len(accepted) < 5:
-            cursor.execute("SELECT text FROM vacancies WHERE status = 'accepted' ORDER BY last_seen DESC LIMIT 20")
-            accepted = list(set(accepted + [row['text'] for row in cursor.fetchall()]))
-            
-        if len(rejected) < 10:
-            cursor.execute("SELECT text FROM vacancies WHERE status = 'rejected' ORDER BY last_seen DESC LIMIT 30")
-            rejected = list(set(rejected + [row['text'] for row in cursor.fetchall()]))
-        
-        conn.close()
-        return {"accepted": accepted, "rejected": rejected}
+        try:
+            # Начало сегодняшнего дня (00:00)
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Берем все одобренные за сегодня
+            cursor.execute("SELECT text FROM vacancies WHERE status = 'accepted' AND last_seen >= ?", (today_start,))
+            accepted = [row['text'] for row in cursor.fetchall()]
+
+            # Берем все отклоненные (мусор) за сегодня
+            cursor.execute("SELECT text FROM vacancies WHERE status = 'rejected' AND last_seen >= ?", (today_start,))
+            rejected = [row['text'] for row in cursor.fetchall()]
+
+            # Если за сегодня данных мало (например, утро), добираем последние 20 штук для контекста
+            if len(accepted) < 5:
+                cursor.execute("SELECT text FROM vacancies WHERE status = 'accepted' ORDER BY last_seen DESC LIMIT 20")
+                accepted = list(set(accepted + [row['text'] for row in cursor.fetchall()]))
+
+            if len(rejected) < 10:
+                cursor.execute("SELECT text FROM vacancies WHERE status = 'rejected' ORDER BY last_seen DESC LIMIT 30")
+                rejected = list(set(rejected + [row['text'] for row in cursor.fetchall()]))
+
+            return {"accepted": accepted, "rejected": rejected}
+        finally:
+            conn.close()
 
     def _build_learning_prompt(self, data: Dict) -> str:
         accepted_text = "\n---\n".join([t[:300] for t in data['accepted']])
@@ -279,10 +280,12 @@ class GwenLearningEngine:
         
         added = 0
         for key in ["positive", "negative"]:
-            current_vals = set(current.get(key, []))
+            # Lowercase existing values for case-insensitive dedup
+            current_vals = set(v.lower() for v in current.get(key, []))
             for val in new_rules.get(key, []):
                 if val.lower() not in current_vals:
                     current[key].append(val.lower())
+                    current_vals.add(val.lower())
                     added += 1
         
         current["last_updated"] = datetime.now().isoformat()
@@ -318,33 +321,34 @@ class GwenLearningEngine:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            cursor.execute("SELECT hash, text FROM vacancies WHERE status = 'accepted' AND (response IS NULL OR response = '')")
-            pending_leads = cursor.fetchall()
-            
-            count_rejected = 0
-            
-            for lead in pending_leads:
-                text_lower = lead['text'].lower()
-                
-                # Проверка на негатив
-                found_negative = None
-                for neg in negative_keywords:
-                    if neg in text_lower:
-                        found_negative = neg
-                        break
-                
-                if found_negative:
-                    # Нашли стоп-слово! Отклоняем.
-                    logger.info(f"🧹 Ревалидация: отклонена вакансия {lead['hash']} (стоп-слово: {found_negative})")
-                    cursor.execute(
-                        "UPDATE vacancies SET status = 'rejected', rejection_reason = ? WHERE hash = ?", 
-                        (f"AUTO_REVALIDATION: {found_negative}", lead['hash'])
-                    )
-                    count_rejected += 1
-            
-            conn.commit()
-            conn.close()
+            try:
+                cursor.execute("SELECT hash, text FROM vacancies WHERE status = 'accepted' AND (response IS NULL OR response = '')")
+                pending_leads = cursor.fetchall()
+
+                count_rejected = 0
+
+                for lead in pending_leads:
+                    text_lower = lead['text'].lower()
+
+                    # Проверка на негатив
+                    found_negative = None
+                    for neg in negative_keywords:
+                        if neg in text_lower:
+                            found_negative = neg
+                            break
+
+                    if found_negative:
+                        # Нашли стоп-слово! Отклоняем.
+                        logger.info(f"🧹 Ревалидация: отклонена вакансия {lead['hash']} (стоп-слово: {found_negative})")
+                        cursor.execute(
+                            "UPDATE vacancies SET status = 'rejected', rejection_reason = ? WHERE hash = ?",
+                            (f"AUTO_REVALIDATION: {found_negative}", lead['hash'])
+                        )
+                        count_rejected += 1
+
+                conn.commit()
+            finally:
+                conn.close()
             
             if count_rejected > 0:
                 logger.info(f"✅ Ревалидация завершена. Очищено лидов: {count_rejected}")

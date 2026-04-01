@@ -7,7 +7,6 @@ from difflib import SequenceMatcher
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import pickle
 import asyncio
 import threading
 from typing import Tuple, Optional, List
@@ -128,7 +127,9 @@ class DuplicateDetector:
         Returns:
             bytes для записи в BLOB колонку
         """
-        return pickle.dumps(embedding, protocol=pickle.HIGHEST_PROTOCOL)
+        # Use numpy binary format instead of pickle to avoid arbitrary code execution
+        # if the database is tampered with
+        return embedding.astype(np.float32).tobytes()
     
     def deserialize_embedding(self, data: bytes) -> Optional[np.ndarray]:
         """
@@ -144,7 +145,7 @@ class DuplicateDetector:
             return None
         
         try:
-            return pickle.loads(data)
+            return np.frombuffer(data, dtype=np.float32).copy()
         except Exception as e:
             logger.error("embedding_deserialization_failed", error=str(e))
             return None

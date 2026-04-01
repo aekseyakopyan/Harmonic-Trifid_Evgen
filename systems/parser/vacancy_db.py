@@ -64,7 +64,9 @@ class VacancyDatabase:
                     labeled_at TEXT,
                     embedding BLOB,
                     is_deleted INTEGER DEFAULT 0,
-                    deleted_at TEXT
+                    deleted_at TEXT,
+                    message_id INTEGER,
+                    chat_id INTEGER
                 )
             """)
             

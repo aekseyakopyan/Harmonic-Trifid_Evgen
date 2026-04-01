@@ -86,6 +86,9 @@ def train_bert_classifier(
     train_dataset = LeadDataset(train_texts, train_labels, tokenizer)
     val_dataset = LeadDataset(val_texts, val_labels, tokenizer)
     
+    # Create output_dir BEFORE TrainingArguments — it saves checkpoints there during training
+    os.makedirs(output_dir, exist_ok=True)
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -113,8 +116,7 @@ def train_bert_classifier(
     
     trainer.train()
     eval_results = trainer.evaluate()
-    
-    os.makedirs(output_dir, exist_ok=True)
+
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     

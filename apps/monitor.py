@@ -101,7 +101,7 @@ def display_dashboard():
             
             # Progress Bar
             bar_len = 20
-            filled = int(bar_len * total_scanned // TOTAL_ESTIMATED_MSGS)
+            filled = int(bar_len * total_scanned / TOTAL_ESTIMATED_MSGS)
             bar = '█' * filled + '░' * (bar_len - filled)
             
             # Chats

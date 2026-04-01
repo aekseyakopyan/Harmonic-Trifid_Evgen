@@ -1375,7 +1375,7 @@ async def llm_deep_analysis(text: str, features: Dict[str, Any], score: int) -> 
     try:
         return await resilient_llm_client.call_with_fallback(
             prompt=prompt,
-            text=text,
+            system_prompt="Ты — экспертный фильтр лидов для digital-маркетинга. Отвечай только валидным JSON.",
             timeout=10
         )
     except Exception as e:

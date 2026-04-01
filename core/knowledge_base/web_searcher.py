@@ -19,7 +19,7 @@ class WebSearcher:
         
         try:
             # Running in a thread pool as ddgs might be blocking or not fully async-native in some versions
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(None, self._sync_search, query, limit)
             return results
         except Exception as e:

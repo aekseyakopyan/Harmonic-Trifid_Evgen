@@ -105,7 +105,7 @@ async def get_parser_status():
         for msg in recent_messages[:10]:
             recent_vacancies.append({
                 "id": msg.id,
-                "content": msg.content[:100] + "..." if len(msg.content) > 100 else msg.content,
+                "content": (msg.content or "")[:100] + ("..." if len(msg.content or "") > 100 else ""),
                 "found_at": msg.created_at.isoformat(),
                 "category": msg.category or "general",
                 "intent": msg.intent or "unknown"

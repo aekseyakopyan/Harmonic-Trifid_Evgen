@@ -29,7 +29,7 @@ class AlexeyEngineRL:
         }
         
         strategy_id = await rl_agent.select_strategy(context)
-        strategy_prompt = self.STRATEGY_PROMPTS[strategy_id]
+        strategy_prompt = self.STRATEGY_PROMPTS.get(strategy_id, self.STRATEGY_PROMPTS['consultative'])
         
         main_prompt = f"""
 Ты — Алексей, опытный digital-маркетолог.

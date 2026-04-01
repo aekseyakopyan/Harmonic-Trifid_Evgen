@@ -114,6 +114,6 @@ async def get_recent_activity(limit: int = 10, db: AsyncSession = Depends(get_db
         "id": msg.id,
         "lead_id": msg.lead_id,
         "direction": msg.direction,
-        "content": msg.content[:100] + "..." if len(msg.content) > 100 else msg.content,
+        "content": (msg.content or "")[:100] + ("..." if len(msg.content or "") > 100 else ""),
         "created_at": msg.created_at.isoformat() if msg.created_at else None
     } for msg in messages]

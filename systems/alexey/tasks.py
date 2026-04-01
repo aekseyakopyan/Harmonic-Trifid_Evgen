@@ -9,7 +9,6 @@ from core.ai_engine.llm_client import llm_client
 from core.ai_engine.prompt_builder import prompt_builder
 from core.utils.logger import logger
 from core.utils.smart_sender import smart_send_message
-from telethon import TelegramClient  # noqa: F401 — remove after full migration
 from pyrogram import Client
 from systems.gwen import create_interceptor
 from core.config.settings import settings
@@ -229,7 +228,7 @@ async def run_automated_outreach(client: Client):
                     
                     # Помечаем чат как прочитанный после обработки
                     try:
-                        await client.send_read_acknowledge(chat)
+                        await client.read_chat_history(chat.id)
                     except Exception as e:
                         logger.warning(f"Failed to mark chat {chat.id} as read: {e}")
                             
@@ -251,7 +250,7 @@ async def run_automated_outreach(client: Client):
                 pass
             await asyncio.sleep(300)
 
-async def run_follow_ups(client: TelegramClient):
+async def run_follow_ups(client: Client):
     """
     Background task to check and send follow-ups.
     """

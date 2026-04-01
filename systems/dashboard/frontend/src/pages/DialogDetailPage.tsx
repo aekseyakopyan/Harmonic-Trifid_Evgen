@@ -9,7 +9,7 @@ import clsx from 'clsx'
 
 export default function DialogDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const dialogId = Number(id)
+  const dialogId = id ? Number(id) : 0
   const qc = useQueryClient()
   const [message, setMessage] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)

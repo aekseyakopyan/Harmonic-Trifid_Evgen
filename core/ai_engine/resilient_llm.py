@@ -164,7 +164,7 @@ class ResilientLLMClient:
         ollama_state = str(self.ollama_breaker.current_state)
         
         return {
-            "healthy": openrouter_state != "open" or ollama_state != "open",
+            "healthy": openrouter_state != "open" and ollama_state != "open",
             "openrouter": {
                 "state": openrouter_state,
                 "fail_counter": self.openrouter_breaker.fail_counter

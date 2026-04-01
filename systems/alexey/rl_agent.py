@@ -47,7 +47,11 @@ class RLAgent:
     async def select_strategy(self, context: Dict) -> str:
         """Выбор стратегии через Thompson Sampling."""
         await self.load_strategies()
-        
+
+        if not self.strategies:
+            logger.warning("No strategies loaded from DB, using default 'consultative'")
+            return 'consultative'
+
         # Exploration
         if np.random.random() < self.exploration_rate:
             strategy_id = np.random.choice(list(self.strategies.keys()))
@@ -122,7 +126,12 @@ class RLAgent:
                 "SELECT strategy_id FROM outreach_attempts WHERE id = ?",
                 (outreach_id,)
             )
-            strategy_id = (await cursor.fetchone())[0]
+            row = await cursor.fetchone()
+            if row is None:
+                logger.error(f"No outreach attempt found for id={outreach_id}, skipping feedback")
+                await db.commit()
+                return
+            strategy_id = row[0]
             
             # Update Thompson Sampling parameters
             success = 1.0 if reward > 0 else 0.0

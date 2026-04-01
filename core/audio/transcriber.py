@@ -12,7 +12,7 @@ class Transcriber:
     """
     _instance = None
     _model = None
-    _lock = asyncio.Lock()
+    _lock = None  # Created lazily after event loop starts (asyncio.Lock() at class level crashes Python 3.12+)
 
     def __new__(cls):
         if cls._instance is None:
@@ -32,6 +32,13 @@ class Transcriber:
                 logger.error(f"❌ Failed to load Whisper model: {e}")
                 raise
 
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        """Lazy-init the lock so it is created inside a running event loop."""
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
+
     async def transcribe(self, file_path: str) -> str:
         """
         Транскрибация аудиофайла.
@@ -40,7 +47,7 @@ class Transcriber:
             logger.error(f"Audio file not found: {file_path}")
             return ""
 
-        async with self._lock:
+        async with self._get_lock():
             try:
                 # Загружаем модель в потоке, чтобы не блокировать event loop, если она ещё не загружена
                 if self._model is None:
