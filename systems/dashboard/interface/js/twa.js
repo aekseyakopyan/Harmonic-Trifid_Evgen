@@ -124,7 +124,7 @@ async function loadDashboard() {
             container.innerHTML = activity.slice(0, 5).map(msg => {
                 const content = msg.content || '(no text)';
                 const directionSymbol = msg.direction === 'incoming' ? '📥' : '📤';
-                const directionText = msg.direction === 'incoming' ? 'Клиент' : 'Алексей';
+                const directionText = msg.direction === 'incoming' ? 'Клиент' : 'Ксения';
 
                 return `
                 <div class="list-item">

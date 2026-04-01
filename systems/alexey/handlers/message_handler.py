@@ -323,7 +323,7 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
 
         history_items = []
         for m in history_msgs:
-            role = "ТЫ (Алексей)" if m.direction == "outgoing" else "КЛИЕНТ"
+            role = "ТЫ (Ксения)" if m.direction == "outgoing" else "КЛИЕНТ"
             history_items.append(f"{role}: {m.content}")
         history_text = "\n".join(history_items)
 
@@ -501,7 +501,7 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             question = match.group(1) if match else "Вопрос не распознан"
             admin_username = settings.ADMIN_TELEGRAM_USERNAME.lstrip('@')
             admin_msg = (
-                f"🆘 **Алексей зовет на помощь!**\n\n"
+                f"🆘 **Ксения зовет на помощь!**\n\n"
                 f"Клиент: {sender_name} (@{sender_username})\n"
                 f"Вопрос: {question}\n\nТеперь твоя очередь!"
             )
@@ -585,7 +585,7 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
 
         # 9. Adaptive Learning
         try:
-            new_history = history_text + f"\nКлиент: {full_text}\nАлексей: {ai_response_text}"
+            new_history = history_text + f"\nКлиент: {full_text}\nКсения: {ai_response_text}"
             analysis_prompt = prompt_builder.build_analysis_prompt(new_history, lead.style_profile or "", lead.context_memory or "")
             analysis_json = await llm_client.generate_response(analysis_prompt, "Ты — аналитик стиля общения.")
             if not analysis_json:

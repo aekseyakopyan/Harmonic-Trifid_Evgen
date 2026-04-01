@@ -166,7 +166,7 @@ async function viewLeadHistory(leadId) {
         messagesContainer.innerHTML = data.messages.map(msg => `
             <div class="message-item ${msg.direction}">
                 <div class="message-header">
-                    <span class="message-direction">${msg.direction === 'incoming' ? '📥 Клиент' : '📤 Алексей'}</span>
+                    <span class="message-direction">${msg.direction === 'incoming' ? '📥 Клиент' : '📤 Ксения'}</span>
                     <span class="message-time">${formatDate(msg.created_at)}</span>
                 </div>
                 <div class="message-content">${msg.content}</div>

@@ -32,7 +32,7 @@ class AlexeyEngineRL:
         strategy_prompt = self.STRATEGY_PROMPTS.get(strategy_id, self.STRATEGY_PROMPTS['consultative'])
         
         main_prompt = f"""
-Ты — Алексей, опытный digital-маркетолог.
+Ты — Ксения, опытный digital-маркетолог и директор по развитию.
 
 {strategy_prompt}
 

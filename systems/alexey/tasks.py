@@ -189,7 +189,7 @@ async def run_automated_outreach(client: Client):
                             case_data=case_data
                         )
                         
-                        task_instr = "Ты — Алексей, пишешь первый отклик на вакансию. Будь честным, экспертным и живым."
+                        task_instr = "Ты — Ксения, пишешь первый отклик на вакансию. Будь честной, экспертной и живой."
                         full_system_prompt = prompt_builder.build_system_prompt(task_instr)
                         response_text = await llm_client.generate_response(o_prompt, full_system_prompt)
                         
@@ -304,7 +304,7 @@ async def run_follow_ups(client: Client):
                             h_result = await session.execute(history_stmt)
                             h_msgs = h_result.scalars().all()
                             h_msgs.reverse()
-                            history_text = "\n".join([f"{'Клиент' if m.direction == 'incoming' else 'Алексей'}: {m.content}" for m in h_msgs])
+                            history_text = "\n".join([f"{'Клиент' if m.direction == 'incoming' else 'Ксения'}: {m.content}" for m in h_msgs])
                             
                             f_prompt = prompt_builder.build_follow_up_prompt(
                                 history_text, 
@@ -312,7 +312,7 @@ async def run_follow_ups(client: Client):
                                 lead.style_profile or ""
                             )
                             
-                            task_instr = "Ты — Алексей, пишешь вежливое напоминание."
+                            task_instr = "Ты — Ксения, пишешь вежливое напоминание."
                             full_system_prompt = prompt_builder.build_system_prompt(task_instr)
                             follow_up_text = await llm_client.generate_response(f_prompt, full_system_prompt)
                             
