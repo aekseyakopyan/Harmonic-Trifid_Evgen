@@ -245,15 +245,25 @@ class GwenCommander:
                         await asyncio.sleep(1)
                         continue
 
-                # 2. Находим вакансии, о которых еще не уведомляли
+                # 2. Находим вакансии, одобренные через веб-дашборд (web_approved)
+                #    и новые принятые вакансии если AUTO_OUTREACH включён
                 with vacancy_db(row_factory=True) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
-                        FROM vacancies
-                        WHERE status = 'accepted' AND (response IS NULL OR response = '')
-                        ORDER BY priority DESC, last_seen ASC LIMIT 20
-                    """)
+                    if settings.AUTO_OUTREACH:
+                        cursor.execute("""
+                            SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
+                            FROM vacancies
+                            WHERE status = 'accepted' AND (response IS NULL OR response = '')
+                            ORDER BY priority DESC, last_seen ASC LIMIT 20
+                        """)
+                    else:
+                        # Ручной режим: только те, что одобрены через веб-дашборд
+                        cursor.execute("""
+                            SELECT hash, text, direction, source, contact_link, draft_response, last_seen, tier, priority, message_id, chat_id
+                            FROM vacancies
+                            WHERE response = 'web_approved'
+                            ORDER BY last_seen ASC LIMIT 20
+                        """)
                     new_vacancies = cursor.fetchall()
                 
                 for v in new_vacancies:
@@ -329,13 +339,16 @@ class GwenCommander:
                                 conn.execute("UPDATE vacancies SET response = 'no_draft_skip' WHERE hash = ?", (v_hash,))
                             continue
 
-                    # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00)
+                    # web_approved = одобрено вручную через дашборд, отправляем всегда
+                    is_web_approved = (v_dict.get('response') == 'web_approved')
+
+                    # ПРОВЕРКА РАБОЧЕГО ВРЕМЕНИ (8:00 - 23:00) — только для авто-режима
                     cur_hour = now_msk().hour
-                    if settings.AUTO_OUTREACH and not (8 <= cur_hour < 23):
+                    if settings.AUTO_OUTREACH and not is_web_approved and not (8 <= cur_hour < 23):
                         logger.info(f"⏸ Вне рабочего времени ({cur_hour}:00). Авто-отклик отложен до 8:00.")
                         continue
 
-                    if settings.AUTO_OUTREACH:
+                    if settings.AUTO_OUTREACH or is_web_approved:
                         try:
                             target = v_contact.split('/')[-1].replace('@', '').strip()
 
@@ -551,13 +564,11 @@ class GwenCommander:
                                 pass
                             continue  # auto-mode failed — do NOT fall through to manual-mode notify
                     else:
-                        # Ручной режим (AUTO_OUTREACH=False) — отправляем на согласование
-                        await supervisor_notifier.notify_new_vacancy(v_dict)
-
-                        # Помечаем как "уведомлен"
+                        # Ручной режим (AUTO_OUTREACH=False) — ждём одобрения через веб-дашборд
+                        # Помечаем как ожидающий (чтобы не обрабатывать повторно)
                         with vacancy_db() as conn:
-                            conn.execute("UPDATE vacancies SET response = 'notified' WHERE hash = ?", (v_hash,))
-                        await asyncio.sleep(2)
+                            conn.execute("UPDATE vacancies SET response = 'pending_web' WHERE hash = ?", (v_hash,))
+                        await asyncio.sleep(1)
                     
             except Exception as e:
                 logger.error(f"Gwen outreach monitor error: {e}")

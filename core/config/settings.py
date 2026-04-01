@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     OUTREACH_ENABLED: bool = False
     OUTREACH_TEST_MODE: bool = True
     OUTREACH_TEST_CHAT_ID: Optional[int] = None
-    AUTO_OUTREACH: bool = True  # Fully automatic mode
+    AUTO_OUTREACH: bool = False  # First messages require web-dashboard approval
     TARGET_KEYWORDS: str = "seo, сео, авито, avito, директ, контекст, маркетолог, сайт, тильда, tilda"
 
     model_config = SettingsConfigDict(

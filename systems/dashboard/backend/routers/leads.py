@@ -278,6 +278,41 @@ async def get_lead_draft(lead_id: int):
     return {"draft": dict(rows2[0])["draft_response"] if rows2 else None}
 
 
+@router.post("/{lead_id}/send_outreach")
+async def send_outreach(lead_id: int):
+    """Одобрить отправку первичного сообщения через веб-дашборд.
+    Помечает вакансию как web_approved — Gwen подхватит и отправит."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT username FROM leads WHERE id = ?", [lead_id])
+        if not rows:
+            raise HTTPException(404, "Lead not found")
+        username = dict(rows[0]).get("username")
+
+    if not username or not os.path.exists(VACANCIES_DB_PATH):
+        raise HTTPException(400, "No username or vacancies DB not found")
+
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as vdb:
+        vdb.row_factory = aiosqlite.Row
+        rows2 = await vdb.execute_fetchall(
+            """SELECT hash FROM vacancies
+               WHERE contact_link LIKE ? AND status='accepted'
+                 AND (response IS NULL OR response='' OR response='pending_web')
+                 AND draft_response IS NOT NULL
+               ORDER BY last_seen DESC LIMIT 1""",
+            [f"%{username}%"],
+        )
+        if not rows2:
+            raise HTTPException(404, "No pending vacancy found for this lead")
+        v_hash = dict(rows2[0])["hash"]
+        await vdb.execute(
+            "UPDATE vacancies SET response='web_approved' WHERE hash=?", [v_hash]
+        )
+        await vdb.commit()
+
+    await manager.broadcast("leads", {"event": "lead_updated", "id": lead_id})
+    return {"ok": True, "queued": True}
+
+
 @router.post("/{lead_id}/queue_outreach")
 async def queue_outreach(lead_id: int):
     """Пометить лид как 'в работе' (contacted)."""

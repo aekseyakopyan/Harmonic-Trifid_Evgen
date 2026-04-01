@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { leadsApi } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Lead } from '../types'
-import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X, MessageSquare, Ban, Copy, Check } from 'lucide-react'
+import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X, MessageSquare, Ban, Copy, Check, Send } from 'lucide-react'
 import clsx from 'clsx'
 import { formatDistanceToNow } from 'date-fns'
 import { ru } from 'date-fns/locale'
@@ -78,10 +78,24 @@ function QuickTierButtons({ leadId, currentTier, onDone }: { leadId: number; cur
 
 function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [sending, setSending] = useState(false)
   const copy = () => {
     navigator.clipboard.writeText(draft)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+  const sendViaKsenia = async () => {
+    setSending(true)
+    try {
+      await leadsApi.sendOutreach(lead.id)
+      setSent(true)
+      setTimeout(onClose, 1500)
+    } catch {
+      alert('Не удалось поставить в очередь — нет вакансии в очереди или ошибка сервера')
+    } finally {
+      setSending(false)
+    }
   }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
@@ -99,23 +113,35 @@ function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClo
         <div className="flex gap-2">
           <button
             onClick={copy}
-            className={clsx('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
+            className={clsx('flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
               copied ? 'border-green-500/40 text-green-400 bg-green-500/10' : 'border-border text-muted hover:text-white hover:border-white/20'
             )}
           >
-            {copied ? <><Check className="w-3.5 h-3.5" /> Скопировано</> : <><Copy className="w-3.5 h-3.5" /> Скопировать</>}
+            {copied ? <><Check className="w-3.5 h-3.5" /> Скопировано</> : <><Copy className="w-3.5 h-3.5" /> Копировать</>}
           </button>
-          {lead.username && (
-            <a
-              href={`https://t.me/${lead.username}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-            >
-              <MessageSquare className="w-3.5 h-3.5" /> Открыть в Telegram
-            </a>
-          )}
+          <button
+            onClick={sendViaKsenia}
+            disabled={sending || sent}
+            className={clsx('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors font-medium',
+              sent ? 'border-green-500/40 text-green-400 bg-green-500/10' :
+              'border-accent/60 text-accent bg-accent/10 hover:bg-accent/20'
+            )}
+          >
+            {sent ? <><Check className="w-3.5 h-3.5" /> Отправлено в очередь</> :
+             sending ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Отправляю…</> :
+             <><Send className="w-3.5 h-3.5" /> Отправить через Ксению</>}
+          </button>
         </div>
+        {lead.username && (
+          <a
+            href={`https://t.me/${lead.username}`}
+            target="_blank"
+            rel="noreferrer"
+            className="block text-center text-xs text-muted hover:text-white transition-colors"
+          >
+            Открыть @{lead.username} в Telegram →
+          </a>
+        )}
       </div>
     </div>
   )
