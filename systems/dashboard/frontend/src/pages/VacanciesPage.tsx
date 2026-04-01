@@ -26,7 +26,7 @@ export default function VacanciesPage() {
   const [page, setPage] = useState(0)
   const limit = 100
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading } = useQuery<{ total: number; items: Record<string, string>[] }>({
     queryKey: ['vacancies', status, search, page],
     queryFn: () =>
       axios
@@ -34,7 +34,7 @@ export default function VacanciesPage() {
           params: { status: status === 'all' ? undefined : status, search: search || undefined, skip: page * limit, limit },
         })
         .then(r => r.data),
-    keepPreviousData: true,
+    placeholderData: (prev) => prev,
   })
 
   const { data: stats } = useQuery({
