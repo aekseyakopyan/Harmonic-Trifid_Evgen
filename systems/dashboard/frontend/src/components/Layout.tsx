@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   Users, MessageSquare, GitBranch, BarChart2,
-  FileText, Activity, Home, Menu, X, Bell, Filter, BookOpen
+  FileText, Activity, Home, Menu, X, Bell, Filter, BookOpen, Briefcase
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -15,6 +15,7 @@ const navItems = [
   { to: '/analytics', icon: BarChart2, label: 'Аналитика' },
   { to: '/filter-stats', icon: Filter, label: 'Фильтр' },
   { to: '/prompts', icon: FileText, label: 'Промпты' },
+  { to: '/vacancies', icon: Briefcase, label: 'Вакансии' },
   { to: '/guide', icon: BookOpen, label: 'Инструкция' },
 ]
 

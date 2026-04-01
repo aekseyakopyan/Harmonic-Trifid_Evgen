@@ -11,6 +11,7 @@ import PromptsPage from './pages/PromptsPage'
 import PromptEditorPage from './pages/PromptEditorPage'
 import FilterStatsPage from './pages/FilterStatsPage'
 import GuidePage from './pages/GuidePage'
+import VacanciesPage from './pages/VacanciesPage'
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="prompts/new" element={<PromptEditorPage />} />
           <Route path="prompts/:id" element={<PromptEditorPage />} />
           <Route path="guide" element={<GuidePage />} />
+          <Route path="vacancies" element={<VacanciesPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

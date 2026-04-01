@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from db.connection import run_migrations
-from routers import leads, dialogs, pipeline, prompts, analytics, ws
+from routers import leads, dialogs, pipeline, prompts, analytics, ws, vacancies
 from core.config import CORS_ORIGINS
 
 
@@ -35,6 +35,7 @@ app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(prompts.router, prefix="/api/prompts", tags=["prompts"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
 app.include_router(ws.router, tags=["websocket"])
+app.include_router(vacancies.router, prefix="/api/vacancies", tags=["vacancies"])
 
 
 @app.get("/api/health")
