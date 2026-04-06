@@ -331,16 +331,41 @@ class TelegramVacancyParser:
         """
         if not contact_link:
             return
-        
+
+        # Блокируем невалидные типы контактов
+        if contact_link.startswith('tel:'):
+            print(f"   ⏭ Пропуск: телефонный контакт (не TG): {contact_link}")
+            return
+        if contact_link.startswith('http') and 't.me/' not in contact_link:
+            print(f"   ⏭ Пропуск: внешняя ссылка без t.me: {contact_link}")
+            return
+
         # Защита от дублей в рамках одного цикла
         if contact_link in self._contacted_today:
             print(f"   ⏭ Уже написали {contact_link} в этом цикле, пропускаем")
             return
-        
+
         # Проверка по базе данных (чтобы не писать повторно спустя время)
         try:
             async with async_session() as session:
-                clean_contact = contact_link.replace('@', '')
+                # Извлекаем чистый username или ID из URL
+                if 'tg://user?id=' in contact_link:
+                    # tg://user?id=12345 → используем числовой ID
+                    try:
+                        clean_contact = contact_link.split('tg://user?id=')[-1].strip()
+                        int(clean_contact)  # validate it's a number
+                    except (ValueError, IndexError):
+                        print(f"   ⏭ Пропуск: невалидный tg://user?id контакт: {contact_link}")
+                        return
+                elif 't.me/' in contact_link:
+                    clean_contact = contact_link.split('t.me/')[-1].strip('/').strip()
+                else:
+                    clean_contact = contact_link.lstrip('@').strip()
+
+                # Блокируем мусорные контакты: слишком короткие, содержат ?/=/:
+                if not clean_contact.isdigit() and (len(clean_contact) < 3 or any(c in clean_contact for c in '?=:#/')):
+                    print(f"   ⏭ Пропуск: невалидный username '{clean_contact}' из {contact_link}")
+                    return
                 # Ищем по username или ID (если это число)
                 stmt = select(Lead).where(
                     or_(
@@ -371,10 +396,17 @@ class TelegramVacancyParser:
                     await session.commit()
                 else:
                     # Создаем нового лида и сразу бронируем его
+                    if clean_contact.isdigit():
+                        lead_tid = int(clean_contact)
+                        lead_uname = None
+                    else:
+                        # Генерируем fake telegram_id из username (как в sync_leads.py)
+                        lead_tid = -(abs(hash(clean_contact)) % (10**9) + 1)
+                        lead_uname = clean_contact
                     lead = Lead(
-                        username=clean_contact if not clean_contact.isdigit() else None,
-                        telegram_id=int(clean_contact) if clean_contact.isdigit() else None,
-                        full_name=contact_link,
+                        username=lead_uname,
+                        telegram_id=lead_tid,
+                        full_name=clean_contact,
                         last_outreach_at=now
                     )
                     session.add(lead)
