@@ -20,6 +20,7 @@ export const leadsApi = {
   draft: (id: number) => api.get<{ draft: string | null }>(`/leads/${id}/draft`),
   queueOutreach: (id: number) => api.post(`/leads/${id}/queue_outreach`),
   sendOutreach: (id: number) => api.post<{ ok: boolean; queued: boolean }>(`/leads/${id}/send_outreach`),
+  generateDraft: (id: number) => api.post<{ draft: string }>(`/leads/${id}/generate_draft`),
   markSpam: (id: number) => api.post<{ ok: boolean; reason: string; username: string }>(`/leads/${id}/mark_spam`),
 }
 

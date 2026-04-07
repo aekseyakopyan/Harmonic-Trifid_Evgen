@@ -12,6 +12,8 @@ import PromptEditorPage from './pages/PromptEditorPage'
 import FilterStatsPage from './pages/FilterStatsPage'
 import GuidePage from './pages/GuidePage'
 import VacanciesPage from './pages/VacanciesPage'
+import ReviewQueuePage from './pages/ReviewQueuePage'
+import QualLeadsPage from './pages/QualLeadsPage'
 
 export default function App() {
   return (
@@ -31,6 +33,8 @@ export default function App() {
           <Route path="prompts/:id" element={<PromptEditorPage />} />
           <Route path="guide" element={<GuidePage />} />
           <Route path="vacancies" element={<VacanciesPage />} />
+          <Route path="review-queue" element={<ReviewQueuePage />} />
+          <Route path="qual-leads" element={<QualLeadsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

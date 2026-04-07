@@ -278,6 +278,56 @@ async def get_lead_draft(lead_id: int):
     return {"draft": dict(rows2[0])["draft_response"] if rows2 else None}
 
 
+@router.post("/{lead_id}/generate_draft")
+async def generate_draft(lead_id: int):
+    """Сгенерировать черновик отклика через LLM и сохранить в vacancies.db."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall("SELECT username, niche FROM leads WHERE id = ?", [lead_id])
+    if not rows:
+        raise HTTPException(404, "Lead not found")
+    username = dict(rows[0]).get("username")
+    direction = dict(rows[0]).get("niche") or "SEO"
+    if not username or not os.path.exists(VACANCIES_DB_PATH):
+        raise HTTPException(400, "No username or vacancies DB")
+
+    # Найти текст вакансии
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as vdb:
+        vdb.row_factory = aiosqlite.Row
+        vac_rows = await vdb.execute_fetchall(
+            """SELECT hash, text, direction FROM vacancies
+               WHERE contact_link LIKE ? AND status='accepted'
+               ORDER BY last_seen DESC LIMIT 1""",
+            [f"%{username}%"],
+        )
+    if not vac_rows:
+        raise HTTPException(404, "Vacancy not found for this lead")
+
+    vac = dict(vac_rows[0])
+    vacancy_text = vac["text"] or ""
+    vac_direction = vac["direction"] or direction
+    vac_hash = vac["hash"]
+
+    import sys, os as _os
+    root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "../../../../.."))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from systems.parser.outreach_generator import OutreachGenerator
+    gen = OutreachGenerator()
+    draft = await gen.generate_draft(vacancy_text=vacancy_text, direction=vac_direction)
+    if not draft:
+        raise HTTPException(500, "LLM failed to generate draft")
+
+    # Сохраняем в vacancies.db
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as vdb:
+        await vdb.execute(
+            "UPDATE vacancies SET draft_response = ? WHERE hash = ?",
+            [draft, vac_hash],
+        )
+        await vdb.commit()
+
+    return {"draft": draft}
+
+
 @router.post("/{lead_id}/send_outreach")
 async def send_outreach(lead_id: int):
     """Одобрить отправку первичного сообщения через веб-дашборд.

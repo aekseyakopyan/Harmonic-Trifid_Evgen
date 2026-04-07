@@ -61,6 +61,54 @@ async def list_vacancies(
     return {"total": total, "items": items}
 
 
+@router.get("/pending")
+async def list_pending_vacancies(skip: int = 0, limit: int = 50):
+    """Вакансии с готовым черновиком, ожидающие отправки."""
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        count_row = await db.execute_fetchall(
+            """SELECT COUNT(*) as c FROM vacancies
+               WHERE status = 'accepted'
+                 AND draft_response IS NOT NULL AND draft_response != ''
+                 AND (response IS NULL OR response = '' OR response = 'pending_web')"""
+        )
+        total = count_row[0]["c"]
+        rows = await db.execute_fetchall(
+            """SELECT id, hash, text, direction, source, contact_link, score,
+                      draft_response, last_seen, created_at
+               FROM vacancies
+               WHERE status = 'accepted'
+                 AND draft_response IS NOT NULL AND draft_response != ''
+                 AND (response IS NULL OR response = '' OR response = 'pending_web')
+               ORDER BY last_seen DESC
+               LIMIT ? OFFSET ?""",
+            [limit, skip],
+        )
+    return {"total": total, "items": [dict(r) for r in rows]}
+
+
+@router.post("/{vacancy_hash}/approve")
+async def approve_vacancy(vacancy_hash: str):
+    """Одобрить отправку черновика."""
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as db:
+        await db.execute(
+            "UPDATE vacancies SET response='web_approved' WHERE hash=?", [vacancy_hash]
+        )
+        await db.commit()
+    return {"ok": True}
+
+
+@router.post("/{vacancy_hash}/skip_draft")
+async def skip_vacancy_draft(vacancy_hash: str):
+    """Пропустить вакансию без отправки."""
+    async with aiosqlite.connect(VACANCIES_DB_PATH) as db:
+        await db.execute(
+            "UPDATE vacancies SET status='no_draft_skip' WHERE hash=?", [vacancy_hash]
+        )
+        await db.commit()
+    return {"ok": True}
+
+
 @router.get("/stats")
 async def vacancies_stats():
     async with aiosqlite.connect(VACANCIES_DB_PATH) as db:

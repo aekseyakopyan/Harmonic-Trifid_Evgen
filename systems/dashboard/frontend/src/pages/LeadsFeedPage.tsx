@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { leadsApi } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Lead } from '../types'
-import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X, MessageSquare, Ban, Copy, Check, Send } from 'lucide-react'
+import { Search, Download, Archive, RefreshCw, ChevronLeft, ChevronRight, Star, CheckSquare, Square, Flame, Thermometer, Snowflake, X, MessageSquare, Ban, Copy, Check, Send, Sparkles } from 'lucide-react'
 import clsx from 'clsx'
 import { formatDistanceToNow } from 'date-fns'
 import { ru } from 'date-fns/locale'
@@ -76,15 +76,35 @@ function QuickTierButtons({ leadId, currentTier, onDone }: { leadId: number; cur
   )
 }
 
-function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClose: () => void }) {
+const NO_DRAFT_TEXT = 'Черновик не найден — напиши вручную'
+
+function DraftModal({ lead, draft: initialDraft, onClose }: { lead: Lead; draft: string; onClose: () => void }) {
+  const [draft, setDraft] = useState(initialDraft)
   const [copied, setCopied] = useState(false)
   const [sent, setSent] = useState(false)
   const [sending, setSending] = useState(false)
+  const [generating, setGenerating] = useState(false)
+
+  const noDraft = draft === NO_DRAFT_TEXT || !draft
+
   const copy = () => {
     navigator.clipboard.writeText(draft)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+
+  const generate = async () => {
+    setGenerating(true)
+    try {
+      const res = await leadsApi.generateDraft(lead.id)
+      setDraft(res.data.draft)
+    } catch {
+      alert('Не удалось сгенерировать — нет вакансии или ошибка LLM')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   const sendViaKsenia = async () => {
     setSending(true)
     try {
@@ -97,6 +117,7 @@ function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClo
       setSending(false)
     }
   }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div className="bg-card border border-border rounded-xl p-5 max-w-lg w-full mx-4 space-y-4" onClick={e => e.stopPropagation()}>
@@ -107,31 +128,61 @@ function DraftModal({ lead, draft, onClose }: { lead: Lead; draft: string; onClo
           </div>
           <button onClick={onClose} className="text-muted hover:text-white"><X className="w-4 h-4" /></button>
         </div>
-        <div className="bg-surface rounded-lg p-3 text-sm text-white/80 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto border border-border/50">
-          {draft}
+
+        <div className={clsx(
+          'rounded-lg p-3 text-sm whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto border',
+          noDraft
+            ? 'bg-surface/50 border-border/30 text-white/30 italic'
+            : 'bg-surface border-border/50 text-white/80'
+        )}>
+          {generating ? (
+            <span className="flex items-center gap-2 text-accent not-italic">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Генерирую отклик…
+            </span>
+          ) : draft}
         </div>
-        <div className="flex gap-2">
+
+        {noDraft && !generating ? (
           <button
-            onClick={copy}
-            className={clsx('flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
-              copied ? 'border-green-500/40 text-green-400 bg-green-500/10' : 'border-border text-muted hover:text-white hover:border-white/20'
-            )}
+            onClick={generate}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm border border-purple-500/40 text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 transition-colors font-medium"
           >
-            {copied ? <><Check className="w-3.5 h-3.5" /> Скопировано</> : <><Copy className="w-3.5 h-3.5" /> Копировать</>}
+            <Sparkles className="w-3.5 h-3.5" /> Сгенерировать отклик
           </button>
-          <button
-            onClick={sendViaKsenia}
-            disabled={sending || sent}
-            className={clsx('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors font-medium',
-              sent ? 'border-green-500/40 text-green-400 bg-green-500/10' :
-              'border-accent/60 text-accent bg-accent/10 hover:bg-accent/20'
-            )}
-          >
-            {sent ? <><Check className="w-3.5 h-3.5" /> Отправлено в очередь</> :
-             sending ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Отправляю…</> :
-             <><Send className="w-3.5 h-3.5" /> Отправить через Ксению</>}
-          </button>
-        </div>
+        ) : (
+          <div className="flex gap-2">
+            <button
+              onClick={generate}
+              disabled={generating}
+              title="Перегенерировать"
+              className="flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg text-sm border border-border text-muted hover:text-purple-300 hover:border-purple-500/40 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={copy}
+              disabled={noDraft || generating}
+              className={clsx('flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors',
+                copied ? 'border-green-500/40 text-green-400 bg-green-500/10' : 'border-border text-muted hover:text-white hover:border-white/20'
+              )}
+            >
+              {copied ? <><Check className="w-3.5 h-3.5" /> Скопировано</> : <><Copy className="w-3.5 h-3.5" /> Копировать</>}
+            </button>
+            <button
+              onClick={sendViaKsenia}
+              disabled={sending || sent || noDraft || generating}
+              className={clsx('flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border transition-colors font-medium',
+                sent ? 'border-green-500/40 text-green-400 bg-green-500/10' :
+                'border-accent/60 text-accent bg-accent/10 hover:bg-accent/20'
+              )}
+            >
+              {sent ? <><Check className="w-3.5 h-3.5" /> Отправлено в очередь</> :
+               sending ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Отправляю…</> :
+               <><Send className="w-3.5 h-3.5" /> Отправить через Ксению</>}
+            </button>
+          </div>
+        )}
+
         {lead.username && (
           <a
             href={`https://t.me/${lead.username}`}
