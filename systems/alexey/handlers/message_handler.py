@@ -202,21 +202,7 @@ async def handle_incoming_message(message: Message, client: Client):
             await session.commit()
         return
 
-    # Детектируем ответы исполнителей/фрилансеров (не клиентов)
-    if _is_freelancer_response(text):
-        logger.info(f"👔 Ответ исполнителя от {sender_id} — останавливаем диалог")
-        async with async_session() as session:
-            stmt = select(Lead).where(Lead.telegram_id == sender_id)
-            result = await session.execute(stmt)
-            lead = result.scalars().first()
-            if not lead:
-                lead = Lead(telegram_id=sender_id, username=getattr(sender, 'username', None),
-                            full_name=getattr(sender, 'first_name', 'Unknown'))
-                session.add(lead)
-            lead.is_human_managed = True
-            lead.handover_reason = "freelancer_executor_response"
-            await session.commit()
-        return
+    # Исполнители/фрилансеры — отвечаем как обычно (не блокируем)
 
     # Потокобезопасное добавление в буфер
     async with _get_buffer_lock(sender_id):
@@ -307,10 +293,6 @@ async def process_full_thought(client: Client, message: Message, sender, full_te
             session.add(lead)
             await session.commit()
             await session.refresh(lead)
-
-        if lead.is_human_managed:
-            logger.info(f"⏸ Skipping AI processing for Lead {sender_id} (Human Managed)")
-            return
 
         lead.follow_up_level = 0
         lead.follow_up_sent_at = None
